@@ -53,7 +53,8 @@ void RecoveryManager::RecoverFromLogs() {
         NOISEPAGE_ASSERT(pair.second.empty(), "Abort records should not have any varlen pointers");
         DeferRecordDeletes(log_record->TxnBegin(), true);
         buffered_changes_map_.erase(log_record->TxnBegin());
-        deferred_action_manager_->RegisterDeferredAction([=] { delete[] reinterpret_cast<byte *>(log_record); });
+        deferred_action_manager_->RegisterDeferredAction([=] { delete[] reinterpret_cast<byte *>(log_record); },
+                                                         transaction::DafId::LOG_RECORD_REMOVAL);
         break;
       }
 
@@ -68,7 +69,8 @@ void RecoveryManager::RecoverFromLogs() {
         recovered_txns_ += ProcessDeferredTransactions(commit_record->OldestActiveTxn());
 
         // Clean up the log record
-        deferred_action_manager_->RegisterDeferredAction([=] { delete[] reinterpret_cast<byte *>(log_record); });
+        deferred_action_manager_->RegisterDeferredAction([=] { delete[] reinterpret_cast<byte *>(log_record); },
+                                                         transaction::DafId::LOG_RECORD_REMOVAL);
         break;
       }
 
@@ -124,16 +126,18 @@ void RecoveryManager::ProcessCommittedTransaction(noisepage::transaction::timest
 
 void RecoveryManager::DeferRecordDeletes(noisepage::transaction::timestamp_t txn_id, bool delete_varlens) {
   // Capture the changes by value except for changes which we can move
-  deferred_action_manager_->RegisterDeferredAction([=, buffered_changes{std::move(buffered_changes_map_[txn_id])}]() {
-    for (auto &buffered_pair : buffered_changes) {
-      delete[] reinterpret_cast<byte *>(buffered_pair.first);
-      if (delete_varlens) {
-        for (auto *varlen_entry : buffered_pair.second) {
-          delete[] varlen_entry;
+  deferred_action_manager_->RegisterDeferredAction(
+      [=, buffered_changes{std::move(buffered_changes_map_[txn_id])}]() {
+        for (auto &buffered_pair : buffered_changes) {
+          delete[] reinterpret_cast<byte *>(buffered_pair.first);
+          if (delete_varlens) {
+            for (auto *varlen_entry : buffered_pair.second) {
+              delete[] varlen_entry;
+            }
+          }
         }
-      }
-    }
-  });
+      },
+      transaction::DafId::LOG_RECORD_REMOVAL);
 }
 
 uint32_t RecoveryManager::ProcessDeferredTransactions(noisepage::transaction::timestamp_t upper_bound_ts) {

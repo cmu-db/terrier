@@ -92,8 +92,8 @@ void GenBenchmarkArguments(benchmark::internal::Benchmark *b) {
 void InvokeGC() {
   // Perform GC to do any cleanup
   auto gc = noisepage::runner::db_main->GetStorageLayer()->GetGarbageCollector();
-  gc->PerformGarbageCollection();
-  gc->PerformGarbageCollection();
+  gc->PerformGarbageCollection(false);
+  gc->PerformGarbageCollection(false);
 }
 
 /**

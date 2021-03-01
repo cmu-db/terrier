@@ -75,7 +75,6 @@ int main(int argc, char *argv[]) {
                      .SetUseSettingsManager(true)
                      .SetUseGC(true)
                      .SetUseCatalog(true)
-                     .SetUseGCThread(true)
                      .SetUseStatsStorage(true)
                      .SetUseExecution(true)
                      .SetUseTrafficCop(true)

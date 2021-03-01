@@ -39,6 +39,7 @@ class WriteAheadLoggingTests : public TerrierTest {
     txn_manager_ = db_main_->GetTransactionLayer()->GetTransactionManager();
     log_manager_ = db_main_->GetLogManager();
     store_ = db_main_->GetStorageLayer()->GetBlockStore();
+    txn_manager_->SetCooperativeGC(false);
   }
 
   void TearDown() override {
@@ -237,8 +238,9 @@ TEST_F(WriteAheadLoggingTests, LargeLogTest) {
   }
 
   // the table can't be freed until after all GC on it is guaranteed to be done. The easy way to do that is to use a
-  // DeferredAction
-  db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete tested; });
+  // DeferredAction. In single-threaded DAF, we need a single deferral in this case.
+  db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete tested; },
+                                                                                      transaction::DafId::INVALID);
 
   for (auto *txn : result.first) delete txn;
   for (auto *txn : result.second) delete txn;
@@ -283,8 +285,9 @@ TEST_F(WriteAheadLoggingTests, ReadOnlyTransactionsGenerateNoLogTest) {
   EXPECT_EQ(log_records_count, 0);
 
   // the table can't be freed until after all GC on it is guaranteed to be done. The easy way to do that is to use a
-  // DeferredAction
-  db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete tested; });
+  // DeferredAction. In single-threaded DAF, we need a single deferral in this case.
+  db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete tested; },
+                                                                                      transaction::DafId::INVALID);
 
   for (auto *txn : result.first) delete txn;
   for (auto *txn : result.second) delete txn;
@@ -357,8 +360,9 @@ TEST_F(WriteAheadLoggingTests, AbortRecordTest) {
   EXPECT_TRUE(found_abort_record);
 
   // the table can't be freed until after all GC on it is guaranteed to be done. The easy way to do that is to use a
-  // DeferredAction
-  db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete sql_table; });
+  // DeferredAction. In single-threaded DAF, we need a single deferral in this case.
+  db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete sql_table; },
+                                                                                      transaction::DafId::INVALID);
 }
 
 // This test verifies that we don't write an abort record for an aborted transaction that never flushed its redo
@@ -414,8 +418,9 @@ TEST_F(WriteAheadLoggingTests, NoAbortRecordTest) {
   EXPECT_FALSE(found_abort_record);
 
   // the table can't be freed until after all GC on it is guaranteed to be done. The easy way to do that is to use a
-  // DeferredAction
-  db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete sql_table; });
+  // DeferredAction. In single-threaded DAF, we need a single deferral in this case.
+  db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete sql_table; },
+                                                                                      transaction::DafId::INVALID);
 }
 
 // Verify that we invoke the callback even for read-only txns. This test checks a bug that was found when sending
@@ -445,7 +450,8 @@ TEST_F(WriteAheadLoggingTests, ReadOnlyCallbackTest) {
   EXPECT_TRUE(future.get());
 
   // the table can't be freed until after all GC on it is guaranteed to be done. The easy way to do that is to use a
-  // DeferredAction
-  db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete sql_table; });
+  // DeferredAction. In single-threaded DAF, we need a single deferral in this case.
+  db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete sql_table; },
+                                                                                      transaction::DafId::INVALID);
 }
 }  // namespace noisepage::storage

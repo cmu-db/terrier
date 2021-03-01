@@ -308,8 +308,14 @@ class DataTable {
   }
 
  private:
-  // The GarbageCollector needs to modify VersionPtrs when pruning version chains
+  // The ArrowSerializer needs access to its blocks.
+  friend class ArrowSerializer;
+  // The TransactionContext needs to modify VersionPtrs when pruning version chains
+  friend class transaction::TransactionContext;
+  // TODO(Ling): remove this after deferred action is installed
+  // The TransactionContext needs to modify VersionPtrs when pruning version chains
   friend class GarbageCollector;
+
   // The TransactionManager needs to modify VersionPtrs when rolling back aborts
   friend class transaction::TransactionManager;
   // The index wrappers need access to IsVisible and HasConflict
@@ -325,9 +331,8 @@ class DataTable {
   friend class BlockCompactor;
   // The access observer provides an abstraction layer between the GC and BlockCompactor
   friend class AccessObserver;
-  // The ArrowSerializer utilizes the accessor directly in order to do fast reads on the underlying
-  // data to minimize copies and increase efficiency.
-  friend class ArrowSerializer;
+  // use to access the accessor of this class
+  friend class UndoRecord;
 
   /**
    * accessor_ tuple access strategy for DataTable
@@ -357,6 +362,9 @@ class DataTable {
   // Atomically write the version pointer value. Should only be used by Insert where there is guaranteed to be no
   // contention
   void AtomicallyWriteVersionPtr(TupleSlot slot, const TupleAccessStrategy &accessor, UndoRecord *desired);
+
+  // Unlinks all of the undo records that are no longer visible.
+  void TruncateVersionChain(TupleSlot slot, transaction::timestamp_t oldest);
 
   // Checks for Snapshot Isolation conflicts, used by Update
   bool HasConflict(const transaction::TransactionContext &txn, UndoRecord *version_ptr) const;

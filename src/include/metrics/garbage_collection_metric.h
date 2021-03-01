@@ -20,11 +20,31 @@ namespace noisepage::metrics {
  */
 class GarbageCollectionMetricRawData : public AbstractRawData {
  public:
+  GarbageCollectionMetricRawData() : aggregate_data_(transaction::DAF_TAG_COUNT, AggregateData()) {}
+
   void Aggregate(AbstractRawData *const other) override {
     auto other_db_metric = dynamic_cast<GarbageCollectionMetricRawData *>(other);
-    if (!other_db_metric->gc_data_.empty()) {
-      gc_data_.splice(gc_data_.cend(), other_db_metric->gc_data_);
+
+    std::list<ActionData> local;
+    other_db_metric->action_data_.swap(local);
+
+    // aggregate the data by DAF type
+    for (const auto action : local) {
+      if (aggregate_data_.at(int32_t(action.daf_id_)).daf_id_ == transaction::DafId::INVALID) {
+        aggregate_data_[int32_t(action.daf_id_)] = {action.daf_id_, 1};
+      } else {
+        aggregate_data_[int32_t(action.daf_id_)].num_actions_processed_++;
+      }
     }
+    // Record max_queue_length
+    if (max_queue_length_ < other_db_metric->max_queue_length_) {
+      max_queue_length_ = other_db_metric->max_queue_length_;
+    }
+    other_db_metric->max_queue_length_ = -1;
+
+    // record number of transaction processed
+    num_txns_processed_ += other_db_metric->num_txns_processed_;
+    other_db_metric->num_txns_processed_ = -1;
   }
 
   /**
@@ -42,57 +62,85 @@ class GarbageCollectionMetricRawData : public AbstractRawData {
                                    [](const std::ofstream &outfile) { return !outfile.is_open(); }) == 0,
                      "Not all files are open.");
 
-    auto &outfile = (*outfiles)[0];
+    // get the corresponding number of txn processed in this interval.
+    auto &daf_count_agg = (*outfiles)[0];
 
-    for (const auto &data : gc_data_) {
-      outfile << data.txns_deallocated_ << ", " << data.txns_unlinked_ << ", " << data.buffer_unlinked_ << ", "
-              << data.readonly_unlinked_ << ", " << data.interval_ << ", ";
-      data.resource_metrics_.ToCSV(outfile);
-      outfile << std::endl;
+    start_ = metrics::MetricsUtil::Now();
+    daf_count_agg << (start_);
+    int total_processed = 0;
+    common::ResourceTracker::Metrics resource_metrics = {};
+    for (const auto &data : aggregate_data_) {
+      total_processed += data.num_actions_processed_;
+      daf_count_agg << ", " << (data.num_actions_processed_);
     }
-    gc_data_.clear();
+    daf_count_agg << ", " << (total_processed) << ", " << (max_queue_length_) << ", " << (num_txns_processed_) << ", ";
+    resource_metrics.ToCSV(daf_count_agg);
+    daf_count_agg << std::endl;
+
+    max_queue_length_ = -1;
+    num_txns_processed_ = -1;
+    action_data_.clear();
+    auto local_agg_data = std::vector<AggregateData>(transaction::DAF_TAG_COUNT, AggregateData());
+    aggregate_data_.swap(local_agg_data);
   }
 
   /**
    * Files to use for writing to CSV.
    */
-  static constexpr std::array<std::string_view, 1> FILES = {"./gc.csv"};
+  static constexpr std::array<std::string_view, 1> FILES = {"./daf_count_agg.csv"};
   /**
    * Columns to use for writing to CSV.
    * Note: This includes the columns for the input feature, but not the output (resource counters)
    */
   static constexpr std::array<std::string_view, 1> FEATURE_COLUMNS = {
-      "txns_deallocated, txns_unlinked, buffer_unlinked, readonly_unlinked, interval"};
+      "start_time, MEMORY_DEALLOCATION, CATALOG_TEARDOWN, INDEX_REMOVE_KEY, COMPACTION, LOG_RECORD_REMOVAL, "
+      "TXN_REMOVAL, "
+      "UNLINK, INVALID, total_num_actions, max_queue_size, total_num_txns"};
 
  private:
   friend class GarbageCollectionMetric;
   FRIEND_TEST(MetricsTests, LoggingCSVTest);
 
-  void RecordGCData(uint64_t txns_deallocated, uint64_t txns_unlinked, uint64_t buffer_unlinked,
-                    uint64_t readonly_unlinked, const uint64_t interval,
-                    const common::ResourceTracker::Metrics &resource_metrics) {
-    gc_data_.emplace_back(txns_deallocated, txns_unlinked, buffer_unlinked, readonly_unlinked, interval,
-                          resource_metrics);
+  void RecordActionData(const transaction::DafId daf_id) { action_data_.emplace_front(daf_id); }
+
+  void RecordQueueSize(const int UNUSED_ATTRIBUTE queue_length) {
+    if (max_queue_length_ < queue_length) {
+      max_queue_length_ = queue_length;
+    }
   }
 
-  struct GCData {
-    GCData(uint64_t txns_deallocated, uint64_t txns_unlinked, uint64_t buffer_unlinked, uint64_t readonly_unlinked,
-           const uint64_t interval, const common::ResourceTracker::Metrics &resource_metrics)
-        : txns_deallocated_(txns_deallocated),
-          txns_unlinked_(txns_unlinked),
-          buffer_unlinked_(buffer_unlinked),
-          readonly_unlinked_(readonly_unlinked),
-          interval_(interval),
-          resource_metrics_(resource_metrics) {}
-    const uint64_t txns_deallocated_;
-    const uint64_t txns_unlinked_;
-    const uint64_t buffer_unlinked_;
-    const uint64_t readonly_unlinked_;
-    const uint64_t interval_;
-    const common::ResourceTracker::Metrics resource_metrics_;
+  void RecordTxnsProcessed() {
+    if (num_txns_processed_ == -1)
+      num_txns_processed_ = 1;
+    else
+      num_txns_processed_++;
+  }
+
+  // Leave it here so that we can easily collect resource metrics for individual action if needed
+  struct ActionData {
+    explicit ActionData(const transaction::DafId daf_id) : daf_id_(daf_id) {}
+    const transaction::DafId daf_id_;
   };
 
-  std::list<GCData> gc_data_;
+  struct AggregateData {
+    AggregateData() = default;
+
+    AggregateData(const transaction::DafId daf_id, const int num_processed)
+        : daf_id_(daf_id), num_actions_processed_(num_processed) {}
+
+    AggregateData(const AggregateData &other) = default;
+    transaction::DafId daf_id_{transaction::DafId::INVALID};
+    int num_actions_processed_{0};
+  };
+
+  std::list<ActionData> action_data_;
+  std::vector<AggregateData> aggregate_data_;
+
+  uint64_t start_ = 0;
+
+  /** Initialize to -1 for periods with no data point collected **/
+  int max_queue_length_ = -1;
+  int num_txns_processed_ = -1;
 };
 
 /**
@@ -102,11 +150,10 @@ class GarbageCollectionMetric : public AbstractMetric<GarbageCollectionMetricRaw
  private:
   friend class MetricsStore;
 
-  void RecordGCData(uint64_t txns_deallocated, uint64_t txns_unlinked, uint64_t buffer_unlinked,
-                    uint64_t readonly_unlinked, uint64_t interval,
-                    const common::ResourceTracker::Metrics &resource_metrics) {
-    GetRawData()->RecordGCData(txns_deallocated, txns_unlinked, buffer_unlinked, readonly_unlinked, interval,
-                               resource_metrics);
-  }
+  void RecordActionData(const transaction::DafId daf_id) { GetRawData()->RecordActionData(daf_id); }
+
+  void RecordQueueSize(const int queue_size) { GetRawData()->RecordQueueSize(queue_size); }
+
+  void RecordTxnsProcessed() { GetRawData()->RecordTxnsProcessed(); }
 };
 }  // namespace noisepage::metrics

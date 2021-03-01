@@ -54,7 +54,7 @@ class BwTreeIndexTests : public TerrierTest {
  protected:
   void SetUp() override {
     thread_pool_.Startup();
-    db_main_ = noisepage::DBMain::Builder().SetUseGC(true).SetUseGCThread(true).SetRecordBufferSegmentSize(1e6).Build();
+    db_main_ = noisepage::DBMain::Builder().SetUseGC(true).SetRecordBufferSegmentSize(1e6).Build();
     txn_manager_ = db_main_->GetTransactionLayer()->GetTransactionManager();
 
     auto col = catalog::Schema::Column("attribute", type::TypeId::INTEGER, false,
@@ -92,11 +92,20 @@ class BwTreeIndexTests : public TerrierTest {
     db_main_->GetStorageLayer()->GetGarbageCollector()->UnregisterIndexForGC(
         common::ManagedPointer<Index>(default_index_));
 
-    db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() {
-      delete sql_table_;
-      delete default_index_;
-      delete unique_index_;
-    });
+    // In multi-threaded DAF, we need at least a double deferral in this case to guarantee the action happens afer
+    // transactions in the tests has unlinked
+    auto daf = db_main_->GetTransactionLayer()->GetDeferredActionManager();
+    daf->RegisterDeferredAction(
+        [=]() {
+          daf->RegisterDeferredAction(
+              [=]() {
+                delete sql_table_;
+                delete default_index_;
+                delete unique_index_;
+              },
+              transaction::DafId::INVALID);
+        },
+        transaction::DafId::INVALID);
 
     delete[] key_buffer_1_;
     delete[] key_buffer_2_;

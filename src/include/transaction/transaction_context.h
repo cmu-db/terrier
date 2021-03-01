@@ -1,5 +1,5 @@
 #pragma once
-
+#include <unordered_set>
 #include <vector>
 
 #include "common/macros.h"
@@ -202,6 +202,18 @@ class TransactionContext {
    * TransactionManager.
    */
   void SetMustAbort() { must_abort_ = true; }
+
+  /**
+   * Add varlen content to transaction context for later deallocation
+   * @param content Content of the varlen entry
+   */
+  void AddReclaimableVarlen(const byte *content) { loose_ptrs_.push_back(content); }
+
+  /**
+   * Unlink the transactionContext
+   * @param oldest_txn timestamp of current running oldest transaction
+   */
+  void Unlink(timestamp_t oldest_txn);
 
  private:
   friend class storage::GarbageCollector;

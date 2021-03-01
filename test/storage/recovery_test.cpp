@@ -53,7 +53,6 @@ class RecoveryTests : public TerrierTest {
                    .SetWalFilePath(RECOVERY_TEST_LOG_FILE_NAME)
                    .SetUseLogging(true)
                    .SetUseGC(true)
-                   .SetUseGCThread(true)
                    .SetUseCatalog(true)
                    .Build();
     txn_manager_ = db_main_->GetTransactionLayer()->GetTransactionManager();
@@ -64,7 +63,6 @@ class RecoveryTests : public TerrierTest {
     recovery_db_main_ = noisepage::DBMain::Builder()
                             .SetUseThreadRegistry(true)
                             .SetUseGC(true)
-                            .SetUseGCThread(true)
                             .SetUseCatalog(true)
                             .SetCreateDefaultDatabase(false)
                             .Build();
@@ -160,14 +158,12 @@ class RecoveryTests : public TerrierTest {
   // Simulates the system shutting down and restarting
   void ShutdownAndRestartSystem() {
     // Simulate the system "shutting down". Guarantee persist of log records
-    db_main_->GetGarbageCollectorThread()->StopGC();
     db_main_->GetTransactionLayer()->GetDeferredActionManager()->FullyPerformGC(
         db_main_->GetStorageLayer()->GetGarbageCollector(), log_manager_);
     log_manager_->PersistAndStop();
 
     // We now "boot up" up the system
     log_manager_->Start();
-    db_main_->GetGarbageCollectorThread()->StartGC();
   }
 
   // Most tests do a single recovery pass into the recovery DBMain
@@ -226,9 +222,12 @@ class RecoveryTests : public TerrierTest {
         recovery_txn_manager_->Commit(recovery_txn, transaction::TransactionUtil::EmptyCallback, nullptr);
       }
     }
-    // the table can't be freed until after all GC on it is guaranteed to be done. The easy way to do that is to use a
-    // DeferredAction
-    db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete tested; });
+    // In multi-threaded DAF, we need at least a double deferral in this case to guarantee the action happens afer
+    // transactions in the tests has unlinked
+    auto daf = db_main_->GetTransactionLayer()->GetDeferredActionManager();
+    daf->RegisterDeferredAction(
+        [=]() { daf->RegisterDeferredAction([=]() { delete tested; }, transaction::DafId::INVALID); },
+        transaction::DafId::INVALID);
   }
 };
 
@@ -451,8 +450,8 @@ TEST_F(RecoveryTests, UnrecoverableTransactionsTest) {
   // We insert a GC restart here so it has the opportunity to clean up the previous txn. Otherwise, the next txn will
   // prevent it from doing so since it never finishes, and by deleting the gc thread during "shutdown", the previous txn
   // will never get cleaned up.
-  db_main_->GetGarbageCollectorThread()->StopGC();
-  db_main_->GetGarbageCollectorThread()->StartGC();
+  db_main_->GetTransactionLayer()->GetDeferredActionManager()->FullyPerformGC(
+      db_main_->GetStorageLayer()->GetGarbageCollector(), log_manager_);
 
   // Create a ton of databases to make a transaction flush redo record buffers. In theory we could do any change, but a
   // create database call will generate a ton of records. Importantly, we don't commit the txn.
@@ -642,7 +641,6 @@ TEST_F(RecoveryTests, DoubleRecoveryTest) {
                           .SetWalFilePath(secondary_log_file)
                           .SetUseLogging(true)
                           .SetUseGC(true)
-                          .SetUseGCThread(true)
                           .SetUseCatalog(true)
                           .SetCreateDefaultDatabase(false)
                           .Build();
@@ -706,7 +704,6 @@ TEST_F(RecoveryTests, DoubleRecoveryTest) {
   auto secondary_recovery_db_main = noisepage::DBMain::Builder()
                                         .SetUseThreadRegistry(true)
                                         .SetUseGC(true)
-                                        .SetUseGCThread(true)
                                         .SetUseCatalog(true)
                                         .SetCreateDefaultDatabase(false)
                                         .Build();
@@ -759,12 +756,19 @@ TEST_F(RecoveryTests, DoubleRecoveryTest) {
     }
   }
 
-  // the table can't be freed until after all GC on it is guaranteed to be done. The easy way to do that is to use a
-  // DeferredAction
-  db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete tested; });
+  // In multi-threaded DAF, we need at least a double deferral in this case to guarantee the action happens afer
+  // transactions in the tests has unlinked
+  auto daf = db_main_->GetTransactionLayer()->GetDeferredActionManager();
+  daf->RegisterDeferredAction(
+      [=]() { daf->RegisterDeferredAction([=]() { delete tested; }, transaction::DafId::INVALID); },
+      transaction::DafId::INVALID);
 
-  secondary_recovery_db_main->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction(
-      [=]() { unlink(secondary_log_file.c_str()); });
+  auto recov_daf = secondary_recovery_db_main->GetTransactionLayer()->GetDeferredActionManager();
+  recov_daf->RegisterDeferredAction(
+      [=]() {
+        recov_daf->RegisterDeferredAction([=]() { unlink(secondary_log_file.c_str()); }, transaction::DafId::INVALID);
+      },
+      transaction::DafId::INVALID);
 }
 
 }  // namespace noisepage::storage

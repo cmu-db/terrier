@@ -9,6 +9,7 @@
 #include "storage/data_table.h"
 #include "test_util/storage_test_util.h"
 #include "test_util/test_harness.h"
+#include "transaction/deferred_action_manager.h"
 #include "transaction/transaction_context.h"
 #include "transaction/transaction_manager.h"
 
@@ -125,6 +126,11 @@ class LargeDataTableBenchmarkObject {
   transaction::TransactionManager *GetTxnManager() { return &txn_manager_; }
 
   /**
+   * @return the deferred action manager used by this test
+   */
+  transaction::DeferredActionManager *GetDeferredActionManager() { return &deferred_action_manager_; }
+
+  /**
    * Simulate an oltp workload, running the specified number of total transactions while allowing the specified number
    * of transactions to run concurrently. Transactions are generated using the configuration provided on construction.
    *
@@ -152,19 +158,21 @@ class LargeDataTableBenchmarkObject {
   storage::BlockLayout layout_;
   storage::DataTable table_;
   std::default_random_engine *generator_;
-  transaction::TransactionContext *initial_txn_;
   uint64_t abort_count_;
   std::vector<double> operation_ratio_;
 
+  transaction::TimestampManager timestamp_manager_;
+  transaction::DeferredActionManager deferred_action_manager_;
+  transaction::TransactionManager txn_manager_;
+  transaction::TransactionContext *initial_txn_;
+
   // tuple content is meaningless if bookkeeping is off.
   std::vector<storage::TupleSlot> inserted_tuples_;
-  transaction::TransactionManager txn_manager_;
 
   // so we don't have to calculate these over and over again
   storage::ProjectedRowInitializer row_initializer_ =
       storage::ProjectedRowInitializer::Create(layout_, StorageTestUtil::ProjectionListAllColumns(layout_));
 
-  transaction::TimestampManager timestamp_manager_;
   uint32_t txn_length_;
   bool gc_on_;
 };

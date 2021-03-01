@@ -71,8 +71,8 @@ static constexpr const char *K_EXIT_KEYWORD = ".exit";
  * @param name The name of the TPL file.
  */
 static void CompileAndRun(const std::string &source, const std::string &name = "tmp-tpl") {
-  // Initialize noisepage objects
-  auto db_main_builder = noisepage::DBMain::Builder().SetUseGC(true).SetUseCatalog(true).SetUseGCThread(true);
+  // Initialize terrier objects
+  auto db_main_builder = noisepage::DBMain::Builder().SetUseGC(true).SetUseCatalog(true);
   auto db_main = db_main_builder.Build();
 
   // Get the correct output format for this test

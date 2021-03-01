@@ -10,7 +10,14 @@
 namespace noisepage::transaction {
 STRONG_TYPEDEF_HEADER(timestamp_t, uint64_t);
 
-constexpr uint8_t MIN_GC_INVOCATIONS = 3;
+// Minimum number of deferred action framework run to fully clean up the deferred action queue
+constexpr uint8_t MIN_GC_INVOCATIONS = 6;
+
+// Number of transactions processed before this thread clean up the deferred action queue
+constexpr int GC_RATIO = 4;
+
+// Max number of deferred action can be processed per DAF invocation
+constexpr uint16_t MAX_ACTION_PER_RUN = 1000;
 
 // Invalid txn timestamp. Used for validation.
 static constexpr timestamp_t INVALID_TXN_TIMESTAMP = timestamp_t(INT64_MIN);
@@ -44,4 +51,18 @@ using TransactionEndAction = std::function<void(DeferredActionManager *)>;
  * and in cases such as GC knowing the actual time enables optimizations.
  */
 using DeferredAction = std::function<void(timestamp_t)>;
+
+constexpr uint8_t DAF_TAG_COUNT = 8;
+
+enum DafId : uint8_t {
+  MEMORY_DEALLOCATION = 0,
+  CATALOG_TEARDOWN,
+  INDEX_REMOVE_KEY,
+  COMPACTION,
+  LOG_RECORD_REMOVAL,
+  TXN_REMOVAL,
+  UNLINK,
+  INVALID
+};
+
 }  // namespace noisepage::transaction

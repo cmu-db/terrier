@@ -8,6 +8,7 @@
 #include "common/managed_pointer.h"
 #include "storage/index/index.h"
 #include "storage/index/index_defs.h"
+#include "transaction/deferred_action_manager.h"
 
 namespace noisepage::transaction {
 class TransactionContext;
@@ -25,6 +26,8 @@ class CompactIntsKey;
 template <uint16_t KeySize>
 class GenericKey;
 
+constexpr uint32_t GC_THRESHOLD = 1000;
+
 /**
  * Wrapper around Ziqi's OpenBwTree.
  * @tparam KeyType the type of keys stored in the BwTree
@@ -36,6 +39,12 @@ class BwTreeIndex final : public Index {
  private:
   explicit BwTreeIndex(IndexMetadata metadata);
 
+  void DAFPerformGC(uint32_t curr_num);
+
+  void IncNumModification(common::ManagedPointer<transaction::TransactionContext> txn);
+
+  std::atomic<uint32_t> num_mod_ = 0;
+  common::SpinLatch index_latch_;
   const std::unique_ptr<third_party::bwtree::BwTree<
       KeyType, TupleSlot, std::less<KeyType>,  // NOLINT transparent functors can't figure out template
       std::equal_to<KeyType>,                  // NOLINT transparent functors can't figure out template

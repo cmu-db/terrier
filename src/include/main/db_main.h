@@ -138,9 +138,8 @@ class DBMain {
                  const common::ManagedPointer<storage::LogManager> log_manager)
         : deferred_action_manager_(txn_layer->GetDeferredActionManager()), log_manager_(log_manager) {
       if (use_gc)
-        garbage_collector_ = std::make_unique<storage::GarbageCollector>(txn_layer->GetTimestampManager(),
-                                                                         txn_layer->GetDeferredActionManager(),
-                                                                         txn_layer->GetTransactionManager(), DISABLED);
+        garbage_collector_ = std::make_unique<storage::GarbageCollector>(txn_layer->GetDeferredActionManager(),
+                                                                         txn_layer->GetTransactionManager());
 
       block_store_ = std::make_unique<storage::BlockStore>(block_store_size_limit, block_store_reuse_limit);
     }
@@ -393,15 +392,6 @@ class DBMain {
                                            common::ManagedPointer(log_manager), create_default_database_);
       }
 
-      std::unique_ptr<storage::GarbageCollectorThread> gc_thread = DISABLED;
-      if (use_gc_thread_) {
-        NOISEPAGE_ASSERT(use_gc_ && storage_layer->GetGarbageCollector() != DISABLED,
-                         "GarbageCollectorThread needs GarbageCollector.");
-        gc_thread = std::make_unique<storage::GarbageCollectorThread>(storage_layer->GetGarbageCollector(),
-                                                                      std::chrono::microseconds{gc_interval_},
-                                                                      common::ManagedPointer(metrics_manager));
-      }
-
       std::unique_ptr<optimizer::StatsStorage> stats_storage = DISABLED;
       if (use_stats_storage_) {
         stats_storage = std::make_unique<optimizer::StatsStorage>();
@@ -467,7 +457,6 @@ class DBMain {
       db_main->txn_layer_ = std::move(txn_layer);
       db_main->storage_layer_ = std::move(storage_layer);
       db_main->catalog_layer_ = std::move(catalog_layer);
-      db_main->gc_thread_ = std::move(gc_thread);
       db_main->stats_storage_ = std::move(stats_storage);
       db_main->execution_layer_ = std::move(execution_layer);
       db_main->traffic_cop_ = std::move(traffic_cop);
@@ -612,15 +601,6 @@ class DBMain {
      */
     Builder &SetCreateDefaultDatabase(const bool value) {
       create_default_database_ = value;
-      return *this;
-    }
-
-    /**
-     * @param value use component
-     * @return self reference for chaining
-     */
-    Builder &SetUseGCThread(const bool value) {
-      use_gc_thread_ = value;
       return *this;
     }
 
@@ -828,7 +808,6 @@ class DBMain {
     uint64_t block_store_size_ = 1e5;
     uint64_t block_store_reuse_ = 1e3;
     int32_t gc_interval_ = 1000;
-    bool use_gc_thread_ = false;
     bool use_stats_storage_ = false;
     bool use_execution_ = false;
     bool use_traffic_cop_ = false;
@@ -999,13 +978,6 @@ class DBMain {
   /**
    * @return ManagedPointer to the component, can be nullptr if disabled
    */
-  common::ManagedPointer<storage::GarbageCollectorThread> GetGarbageCollectorThread() const {
-    return common::ManagedPointer(gc_thread_);
-  }
-
-  /**
-   * @return ManagedPointer to the component, can be nullptr if disabled
-   */
   common::ManagedPointer<selfdriving::Pilot> GetPilot() const { return common::ManagedPointer(pilot_); }
 
   /**
@@ -1056,8 +1028,6 @@ class DBMain {
   std::unique_ptr<TransactionLayer> txn_layer_;
   std::unique_ptr<StorageLayer> storage_layer_;
   std::unique_ptr<CatalogLayer> catalog_layer_;
-  std::unique_ptr<storage::GarbageCollectorThread>
-      gc_thread_;  // thread needs to die before manual invocations of GC in CatalogLayer and others
   std::unique_ptr<optimizer::StatsStorage> stats_storage_;
   std::unique_ptr<ExecutionLayer> execution_layer_;
   std::unique_ptr<trafficcop::TrafficCop> traffic_cop_;

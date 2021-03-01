@@ -18,6 +18,8 @@ namespace noisepage {
 class DeferredActionsTest : public TerrierTest {
  protected:
   void SetUp() override {
+    // reset the number of transaction processed to 0 for each test case
+    common::thread_context.num_txns_completed_ = 0;
     db_main_ = noisepage::DBMain::Builder().SetUseGC(true).Build();
     txn_mgr_ = db_main_->GetTransactionLayer()->GetTransactionManager();
     deferred_action_manager_ = db_main_->GetTransactionLayer()->GetDeferredActionManager();
@@ -69,19 +71,19 @@ TEST_F(DeferredActionsTest, CommitAction) {
   EXPECT_TRUE(committed);
   EXPECT_FALSE(aborted);
 
-  gc_->PerformGarbageCollection();
-  gc_->PerformGarbageCollection();
+  gc_->PerformGarbageCollection(false);
+  gc_->PerformGarbageCollection(false);
 }
 
 // Test that the GC performs available deferred actions when PerformGarbageCollection is called
 // NOLINTNEXTLINE
 TEST_F(DeferredActionsTest, SimpleDefer) {
   bool deferred = false;
-  deferred_action_manager_->RegisterDeferredAction([&]() { deferred = true; });
+  deferred_action_manager_->RegisterDeferredAction([&]() { deferred = true; }, transaction::DafId::INVALID);
 
   EXPECT_FALSE(deferred);
 
-  gc_->PerformGarbageCollection();
+  gc_->PerformGarbageCollection(false);
 
   EXPECT_TRUE(deferred);
 }
@@ -94,17 +96,17 @@ TEST_F(DeferredActionsTest, DelayedDefer) {
   auto *txn = txn_mgr_->BeginTransaction();
 
   bool deferred = false;
-  deferred_action_manager_->RegisterDeferredAction([&]() { deferred = true; });
+  deferred_action_manager_->RegisterDeferredAction([&]() { deferred = true; }, transaction::DafId::INVALID);
 
   EXPECT_FALSE(deferred);
 
-  gc_->PerformGarbageCollection();
+  gc_->PerformGarbageCollection(false);
 
   EXPECT_FALSE(deferred);  // txn is still open
 
   txn_mgr_->Abort(txn);
 
-  gc_->PerformGarbageCollection();
+  gc_->PerformGarbageCollection(false);
 
   EXPECT_TRUE(deferred);
 }
@@ -115,20 +117,22 @@ TEST_F(DeferredActionsTest, DelayedDefer) {
 TEST_F(DeferredActionsTest, ChainedDefer) {
   bool defer1 = false;
   bool defer2 = false;
-  deferred_action_manager_->RegisterDeferredAction([&]() {
-    defer1 = true;
-    deferred_action_manager_->RegisterDeferredAction([&]() { defer2 = true; });
-  });
+  deferred_action_manager_->RegisterDeferredAction(
+      [&]() {
+        defer1 = true;
+        deferred_action_manager_->RegisterDeferredAction([&]() { defer2 = true; }, transaction::DafId::INVALID);
+      },
+      transaction::DafId::INVALID);
 
   EXPECT_FALSE(defer1);
   EXPECT_FALSE(defer2);
 
-  gc_->PerformGarbageCollection();
+  gc_->PerformGarbageCollection(false);
 
   EXPECT_TRUE(defer1);
   EXPECT_FALSE(defer2);  // Sitting in txn_mgr_'s deferral queue
 
-  gc_->PerformGarbageCollection();
+  gc_->PerformGarbageCollection(false);
 
   EXPECT_TRUE(defer1);
   EXPECT_TRUE(defer2);
@@ -148,10 +152,12 @@ TEST_F(DeferredActionsTest, AbortBootstrapDefer) {
   txn->RegisterCommitAction([&]() { committed = true; });
   txn->RegisterAbortAction([&](transaction::DeferredActionManager *deferred_action_manager) {
     aborted = true;
-    deferred_action_manager->RegisterDeferredAction([&, deferred_action_manager]() {
-      defer1 = true;
-      deferred_action_manager->RegisterDeferredAction([&]() { defer2 = true; });
-    });
+    deferred_action_manager->RegisterDeferredAction(
+        [&, deferred_action_manager]() {
+          defer1 = true;
+          deferred_action_manager->RegisterDeferredAction([&]() { defer2 = true; }, transaction::DafId::INVALID);
+        },
+        transaction::DafId::INVALID);
   });
 
   EXPECT_FALSE(aborted);
@@ -159,7 +165,7 @@ TEST_F(DeferredActionsTest, AbortBootstrapDefer) {
   EXPECT_FALSE(defer1);
   EXPECT_FALSE(defer2);
 
-  gc_->PerformGarbageCollection();
+  gc_->PerformGarbageCollection(false);
 
   EXPECT_FALSE(aborted);
   EXPECT_FALSE(committed);
@@ -173,14 +179,14 @@ TEST_F(DeferredActionsTest, AbortBootstrapDefer) {
   EXPECT_FALSE(defer1);
   EXPECT_FALSE(defer2);
 
-  gc_->PerformGarbageCollection();
+  gc_->PerformGarbageCollection(false);
 
   EXPECT_TRUE(aborted);
   EXPECT_FALSE(committed);
   EXPECT_TRUE(defer1);
   EXPECT_FALSE(defer2);
 
-  gc_->PerformGarbageCollection();
+  gc_->PerformGarbageCollection(false);
 
   EXPECT_TRUE(aborted);
   EXPECT_FALSE(committed);
@@ -202,10 +208,12 @@ TEST_F(DeferredActionsTest, CommitBootstrapDefer) {
   txn->RegisterAbortAction([&]() { aborted = true; });
   txn->RegisterCommitAction([&](transaction::DeferredActionManager *deferred_action_manager) {
     committed = true;
-    deferred_action_manager->RegisterDeferredAction([&, deferred_action_manager]() {
-      defer1 = true;
-      deferred_action_manager->RegisterDeferredAction([&]() { defer2 = true; });
-    });
+    deferred_action_manager->RegisterDeferredAction(
+        [&, deferred_action_manager]() {
+          defer1 = true;
+          deferred_action_manager->RegisterDeferredAction([&]() { defer2 = true; }, transaction::DafId::INVALID);
+        },
+        transaction::DafId::INVALID);
   });
 
   EXPECT_FALSE(aborted);
@@ -213,7 +221,7 @@ TEST_F(DeferredActionsTest, CommitBootstrapDefer) {
   EXPECT_FALSE(defer1);
   EXPECT_FALSE(defer2);
 
-  gc_->PerformGarbageCollection();
+  gc_->PerformGarbageCollection(false);
 
   EXPECT_FALSE(aborted);
   EXPECT_FALSE(committed);
@@ -227,14 +235,14 @@ TEST_F(DeferredActionsTest, CommitBootstrapDefer) {
   EXPECT_FALSE(defer1);
   EXPECT_FALSE(defer2);
 
-  gc_->PerformGarbageCollection();
+  gc_->PerformGarbageCollection(false);
 
   EXPECT_FALSE(aborted);
   EXPECT_TRUE(committed);
   EXPECT_TRUE(defer1);
   EXPECT_FALSE(defer2);
 
-  gc_->PerformGarbageCollection();
+  gc_->PerformGarbageCollection(false);
 
   EXPECT_FALSE(aborted);
   EXPECT_TRUE(committed);

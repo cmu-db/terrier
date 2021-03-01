@@ -63,10 +63,9 @@ class NetworkTests : public TerrierTest {
     deferred_action_manager_ = new transaction::DeferredActionManager(common::ManagedPointer(timestamp_manager_));
     txn_manager_ = new transaction::TransactionManager(common::ManagedPointer(timestamp_manager_),
                                                        common::ManagedPointer(deferred_action_manager_),
-                                                       common::ManagedPointer(&buffer_pool_), true, false, DISABLED);
-    gc_ = new storage::GarbageCollector(common::ManagedPointer(timestamp_manager_),
-                                        common::ManagedPointer(deferred_action_manager_),
-                                        common::ManagedPointer(txn_manager_), DISABLED);
+                                                       common::ManagedPointer(&buffer_pool_), true, DISABLED);
+    gc_ = new storage::GarbageCollector(common::ManagedPointer(deferred_action_manager_),
+                                        common::ManagedPointer(txn_manager_));
 
     catalog_ = new catalog::Catalog(common::ManagedPointer(txn_manager_), common::ManagedPointer(&block_store_),
                                     common::ManagedPointer(gc_));
@@ -104,9 +103,9 @@ class NetworkTests : public TerrierTest {
     catalog_->TearDown();
 
     // Run the GC to clean up transactions
-    gc_->PerformGarbageCollection();
-    gc_->PerformGarbageCollection();
-    gc_->PerformGarbageCollection();
+    gc_->PerformGarbageCollection(false);
+    gc_->PerformGarbageCollection(false);
+    gc_->PerformGarbageCollection(false);
 
     delete catalog_;
     delete tcop_;

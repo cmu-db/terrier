@@ -6,6 +6,7 @@
 #include "common/scoped_timer.h"
 #include "common/thread_context.h"
 #include "metrics/metrics_store.h"
+#include "transaction/deferred_action_manager.h"
 
 namespace noisepage::transaction {
 TransactionContext *TransactionManager::BeginTransaction() {
@@ -120,21 +121,49 @@ timestamp_t TransactionManager::Commit(TransactionContext *const txn, transactio
   LogCommit(txn, result, callback, callback_arg, oldest_active_txn);
 
   // We hand off txn to GC, however, it won't be GC'd until the LogManager marks it as serialized
-  if (gc_enabled_) {
-    common::SpinLatch::ScopedSpinLatch guard(&timestamp_manager_->curr_running_txns_latch_);
+  // TODO(Ling): eventually we will removed the gc_enabled flag after completely integrate the deferred action framework
+  if (gc_enabled_ && deferred_action_manager_ != DISABLED) {
     // It is not necessary to have to GC process read-only transactions, but it's probably faster to call free off
     // the critical path there anyway
-    // Also note here that GC will figure out what varlen entries to GC, as opposed to in the abort case.
-    completed_txns_.push_front(txn);
+    CleanTransaction(txn);
   }
+  return result;
+}
 
-  if (txn_metrics_enabled) {
+void TransactionManager::CleanTransaction(TransactionContext *txn) {
+  if (txn->IsReadOnly()) {
+    num_unlinked_++;
+    // This is a read-only transaction so this is safe to immediately delete
+    delete txn;
+  } else {
+    deferred_action_manager_->RegisterDeferredAction(
+        [=](timestamp_t oldest_txn) {
+          num_unlinked_++;
+          txn->Unlink(oldest_txn);
+          deferred_action_manager_->RegisterDeferredAction(
+              [=]() {
+                num_deallocated_++;
+                delete txn;
+              },
+              transaction::DafId::TXN_REMOVAL);
+        },
+        transaction::DafId::UNLINK);
+  }
+  if (common::thread_context.metrics_store_ != nullptr &&
+      common::thread_context.metrics_store_->ComponentToRecord(metrics::MetricsComponent::TRANSACTION)) {
     common::thread_context.resource_tracker_.Stop();
     auto &resource_metrics = common::thread_context.resource_tracker_.GetMetrics();
     common::thread_context.metrics_store_->RecordCommitData(static_cast<uint64_t>(txn->IsReadOnly()), resource_metrics);
   }
+  if (common::thread_context.metrics_store_ != nullptr &&
+      common::thread_context.metrics_store_->ComponentToRecord(metrics::MetricsComponent::GARBAGECOLLECTION)) {
+    common::thread_context.metrics_store_->RecordTxnsProcessed();
+  }
 
-  return result;
+  if (cooperative_gc_ && ++common::thread_context.num_txns_completed_ == transaction::GC_RATIO) {
+    common::thread_context.num_txns_completed_ = 0;
+    deferred_action_manager_->Process(true);
+  }
 }
 
 void TransactionManager::LogAbort(TransactionContext *const txn) {
@@ -197,14 +226,15 @@ timestamp_t TransactionManager::Abort(TransactionContext *const txn) {
   LogAbort(txn);
 
   // We hand off txn to GC, however, it won't be GC'd until the LogManager marks it as serialized
-  if (gc_enabled_) {
-    common::SpinLatch::ScopedSpinLatch guard(&timestamp_manager_->curr_running_txns_latch_);
-    // It is not necessary to have to GC process read-only transactions, but it's probably faster to call free off
-    // the critical path there anyway
-    // Also note here that GC will figure out what varlen entries to GC, as opposed to in the abort case.
-    completed_txns_.push_front(txn);
+  // TODO(Ling): eventually we will removed the gc_enabled flag after completely integrate the deferred action framework
+  if (gc_enabled_ && deferred_action_manager_ != DISABLED) {
+    CleanTransaction(txn);
   }
-
+  if (common::thread_context.metrics_store_ != nullptr &&
+      (common::thread_context.metrics_store_->ComponentToRecord(metrics::MetricsComponent::GARBAGECOLLECTION) ||
+       common::thread_context.metrics_store_->ComponentToRecord(metrics::MetricsComponent::TRANSACTION))) {
+    common::thread_context.metrics_store_->RecordTxnsProcessed();
+  }
   return abort_time;
 }
 
@@ -241,11 +271,6 @@ void TransactionManager::GCLastUpdateOnAbort(TransactionContext *const txn) {
       }
     }
   }
-}
-
-TransactionQueue TransactionManager::CompletedTransactionsForGC() {
-  common::SpinLatch::ScopedSpinLatch guard(&timestamp_manager_->curr_running_txns_latch_);
-  return std::move(completed_txns_);
 }
 
 void TransactionManager::Rollback(TransactionContext *txn, const storage::UndoRecord &record) const {

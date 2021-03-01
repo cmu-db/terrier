@@ -23,9 +23,7 @@ namespace noisepage {
 class IndexBenchmark : public benchmark::Fixture {
  private:
   // Garbage Collector
-  const std::chrono::microseconds gc_period_{1000};
   storage::GarbageCollector *gc_;
-  storage::GarbageCollectorThread *gc_thread_;
 
   // Test infrastructure
   storage::BlockStore block_store_{10000, 1000};
@@ -73,18 +71,15 @@ class IndexBenchmark : public benchmark::Fixture {
     deferred_action_manager_ = new transaction::DeferredActionManager(common::ManagedPointer(timestamp_manager_));
     txn_manager_ = new transaction::TransactionManager(common::ManagedPointer(timestamp_manager_),
                                                        common::ManagedPointer(deferred_action_manager_),
-                                                       common::ManagedPointer(&buffer_pool_), true, false, DISABLED);
-    gc_ = new storage::GarbageCollector(common::ManagedPointer(timestamp_manager_),
-                                        common::ManagedPointer(deferred_action_manager_),
-                                        common::ManagedPointer(txn_manager_), DISABLED);
-    gc_thread_ = new storage::GarbageCollectorThread(common::ManagedPointer(gc_), gc_period_, nullptr);
+                                                       common::ManagedPointer(&buffer_pool_), true, DISABLED);
+    gc_ = new storage::GarbageCollector(common::ManagedPointer(deferred_action_manager_),
+                                        common::ManagedPointer(txn_manager_));
   }
 
   // Script to free all allocated elements of table structure
   void TearDown(const benchmark::State &state) override {
-    gc_thread_->GetGarbageCollector()->UnregisterIndexForGC(index_);
+    gc_->UnregisterIndexForGC(index_);
 
-    delete gc_thread_;
     delete gc_;
     delete sql_table_;
     delete[] key_buffer_;
@@ -109,7 +104,7 @@ class IndexBenchmark : public benchmark::Fixture {
     index_ = (storage::index::IndexBuilder().SetKeySchema(index_schema_)).Build();
 
     // Register index to garbage collector
-    gc_thread_->GetGarbageCollector()->RegisterIndexForGC(index_);
+    gc_->RegisterIndexForGC(index_);
 
     // Allocate buffer for data
     key_buffer_ = common::AllocationUtil::AllocateAligned(index_->GetProjectedRowInitializer().ProjectedRowSize());

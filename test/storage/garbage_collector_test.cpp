@@ -96,6 +96,7 @@ TEST_F(GarbageCollectorTests, SingleInsert) {
   for (uint32_t iteration = 0; iteration < num_iterations_; ++iteration) {
     auto db_main = DBMain::Builder().SetUseGC(true).Build();
     auto txn_manager = db_main->GetTransactionLayer()->GetTransactionManager();
+    txn_manager->SetCooperativeGC(false);
     auto gc = db_main->GetStorageLayer()->GetGarbageCollector();
 
     GarbageCollectorDataTableTestObject tested(db_main->GetStorageLayer()->GetBlockStore().Get(), max_columns_,
@@ -111,13 +112,13 @@ TEST_F(GarbageCollectorTests, SingleInsert) {
     EXPECT_TRUE(StorageTestUtil::ProjectionListEqualShallow(tested.Layout(), select_tuple, insert_tuple));
 
     // Nothing should be able to be GC'd yet because txn0 has not committed yet
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     txn_manager->Commit(txn0, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the Insert's UndoRecord, then deallocate it on the next run
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
-    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
+    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection(false));
   }
 }
 
@@ -128,6 +129,7 @@ TEST_F(GarbageCollectorTests, ReadOnly) {
     auto db_main = DBMain::Builder().SetUseGC(true).Build();
     auto txn_manager = db_main->GetTransactionLayer()->GetTransactionManager();
     auto gc = db_main->GetStorageLayer()->GetGarbageCollector();
+    txn_manager->SetCooperativeGC(false);
 
     GarbageCollectorDataTableTestObject tested(db_main->GetStorageLayer()->GetBlockStore().Get(), max_columns_,
                                                &generator_);
@@ -136,8 +138,8 @@ TEST_F(GarbageCollectorTests, ReadOnly) {
     txn_manager->Commit(txn0, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the txn and deallocate immediately because it's read-only
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
   }
 }
 
@@ -148,6 +150,7 @@ TEST_F(GarbageCollectorTests, CommitInsert1) {
     auto db_main = DBMain::Builder().SetUseGC(true).Build();
     auto txn_manager = db_main->GetTransactionLayer()->GetTransactionManager();
     auto gc = db_main->GetStorageLayer()->GetGarbageCollector();
+    txn_manager->SetCooperativeGC(false);
 
     GarbageCollectorDataTableTestObject tested(db_main->GetStorageLayer()->GetBlockStore().Get(), max_columns_,
                                                &generator_);
@@ -162,7 +165,7 @@ TEST_F(GarbageCollectorTests, CommitInsert1) {
     EXPECT_TRUE(StorageTestUtil::ProjectionListEqualShallow(tested.Layout(), select_tuple, insert_tuple));
 
     // Nothing should be able to be GC'd yet because txn0 has not committed yet
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     auto *txn1 = txn_manager->BeginTransaction();
 
@@ -172,7 +175,7 @@ TEST_F(GarbageCollectorTests, CommitInsert1) {
     txn_manager->Commit(txn0, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Nothing should be able to be GC'd yet because txn1 started before txn0's commit
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     tested.SelectIntoBuffer(txn1, slot);
     EXPECT_FALSE(tested.select_result_);
@@ -180,8 +183,8 @@ TEST_F(GarbageCollectorTests, CommitInsert1) {
     txn_manager->Commit(txn1, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the two transactions and then deallocate the single non-read-only transaction
-    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection());
-    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection(false));
+    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection(false));
 
     auto *txn2 = txn_manager->BeginTransaction();
 
@@ -191,8 +194,8 @@ TEST_F(GarbageCollectorTests, CommitInsert1) {
     txn_manager->Commit(txn2, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the read-only transaction, and it shouldn't make it to the second invocation because it's read-only
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
   }
 }
 
@@ -203,6 +206,7 @@ TEST_F(GarbageCollectorTests, CommitInsert2) {
     auto db_main = DBMain::Builder().SetUseGC(true).Build();
     auto txn_manager = db_main->GetTransactionLayer()->GetTransactionManager();
     auto gc = db_main->GetStorageLayer()->GetGarbageCollector();
+    txn_manager->SetCooperativeGC(false);
 
     GarbageCollectorDataTableTestObject tested(db_main->GetStorageLayer()->GetBlockStore().Get(), max_columns_,
                                                &generator_);
@@ -222,7 +226,7 @@ TEST_F(GarbageCollectorTests, CommitInsert2) {
     EXPECT_TRUE(StorageTestUtil::ProjectionListEqualShallow(tested.Layout(), select_tuple, insert_tuple));
 
     // Nothing should be able to be GC'd yet because txn0 has not committed yet
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     txn_manager->Commit(txn1, transaction::TransactionUtil::EmptyCallback, nullptr);
 
@@ -230,13 +234,13 @@ TEST_F(GarbageCollectorTests, CommitInsert2) {
     EXPECT_FALSE(tested.select_result_);
 
     // Nothing should be able to be GC'd yet because txn0 started before txn1's commit
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     txn_manager->Commit(txn0, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the two transactions and then deallocate the single non-read-only transaction
-    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection());
-    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection(false));
+    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection(false));
 
     auto *txn2 = txn_manager->BeginTransaction();
 
@@ -246,9 +250,9 @@ TEST_F(GarbageCollectorTests, CommitInsert2) {
     txn_manager->Commit(txn2, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the read-only transaction
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
     // It shouldn't make it to the second invocation because it's read-only
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
   }
 }
 
@@ -259,6 +263,7 @@ TEST_F(GarbageCollectorTests, AbortInsert1) {
     auto db_main = DBMain::Builder().SetUseGC(true).Build();
     auto txn_manager = db_main->GetTransactionLayer()->GetTransactionManager();
     auto gc = db_main->GetStorageLayer()->GetGarbageCollector();
+    txn_manager->SetCooperativeGC(false);
 
     GarbageCollectorDataTableTestObject tested(db_main->GetStorageLayer()->GetBlockStore().Get(), max_columns_,
                                                &generator_);
@@ -273,7 +278,7 @@ TEST_F(GarbageCollectorTests, AbortInsert1) {
     EXPECT_TRUE(StorageTestUtil::ProjectionListEqualShallow(tested.Layout(), select_tuple, insert_tuple));
 
     // Nothing should be able to be GC'd yet because txn0 has not committed yet
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     auto *txn1 = txn_manager->BeginTransaction();
 
@@ -283,7 +288,7 @@ TEST_F(GarbageCollectorTests, AbortInsert1) {
     txn_manager->Abort(txn0);
 
     // Aborted transactions cannot be removed from the unlink queue immediately
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     tested.SelectIntoBuffer(txn1, slot);
     EXPECT_FALSE(tested.select_result_);
@@ -291,9 +296,9 @@ TEST_F(GarbageCollectorTests, AbortInsert1) {
     txn_manager->Commit(txn1, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     //  process the read-only transaction and aborted transaction
-    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection(false));
     // Read-only transaction shouldn't have made it to the deallocate queue, aborted transaction can be deallocated
-    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection(false));
 
     auto *txn2 = txn_manager->BeginTransaction();
 
@@ -302,9 +307,9 @@ TEST_F(GarbageCollectorTests, AbortInsert1) {
     txn_manager->Commit(txn2, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the read-only transaction
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
     // It shouldn't make it to the second invocation because it's read-only
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
   }
 }
 
@@ -315,6 +320,7 @@ TEST_F(GarbageCollectorTests, AbortInsert2) {
     auto db_main = DBMain::Builder().SetUseGC(true).Build();
     auto txn_manager = db_main->GetTransactionLayer()->GetTransactionManager();
     auto gc = db_main->GetStorageLayer()->GetGarbageCollector();
+    txn_manager->SetCooperativeGC(false);
 
     GarbageCollectorDataTableTestObject tested(db_main->GetStorageLayer()->GetBlockStore().Get(), max_columns_,
                                                &generator_);
@@ -334,12 +340,12 @@ TEST_F(GarbageCollectorTests, AbortInsert2) {
     EXPECT_TRUE(StorageTestUtil::ProjectionListEqualShallow(tested.Layout(), select_tuple, insert_tuple));
 
     // Nothing should be able to be GC'd yet because txn1 has not committed yet
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     txn_manager->Abort(txn1);
 
     // Aborted transactions cannot be removed from the unlink queue immediately
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     tested.SelectIntoBuffer(txn0, slot);
     EXPECT_FALSE(tested.select_result_);
@@ -347,9 +353,9 @@ TEST_F(GarbageCollectorTests, AbortInsert2) {
     txn_manager->Commit(txn0, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // process the read-only transaction and aborted transcation
-    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection(false));
     // Read-only transaction shouldn't have made it to the deallocate queue, aborted transaction is deallocated
-    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection(false));
 
     auto *txn2 = txn_manager->BeginTransaction();
 
@@ -358,9 +364,9 @@ TEST_F(GarbageCollectorTests, AbortInsert2) {
     txn_manager->Commit(txn2, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the read-only transaction
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
     // It shouldn't make it to the second invocation because it's read-only
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
   }
 }
 
@@ -371,6 +377,7 @@ TEST_F(GarbageCollectorTests, CommitUpdate1) {
     auto db_main = DBMain::Builder().SetUseGC(true).Build();
     auto txn_manager = db_main->GetTransactionLayer()->GetTransactionManager();
     auto gc = db_main->GetStorageLayer()->GetGarbageCollector();
+    txn_manager->SetCooperativeGC(false);
 
     GarbageCollectorDataTableTestObject tested(db_main->GetStorageLayer()->GetBlockStore().Get(), max_columns_,
                                                &generator_);
@@ -383,8 +390,8 @@ TEST_F(GarbageCollectorTests, CommitUpdate1) {
     txn_manager->Commit(txn, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink and reclaim the Insert
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
-    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
+    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection(false));
 
     storage::ProjectedRow *update = tested.GenerateRandomUpdate(&generator_);
 
@@ -399,7 +406,7 @@ TEST_F(GarbageCollectorTests, CommitUpdate1) {
     EXPECT_TRUE(StorageTestUtil::ProjectionListEqualShallow(tested.Layout(), select_tuple, update_tuple));
 
     // Nothing should be able to be GC'd yet because txn0 has not committed yet
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     auto *txn1 = txn_manager->BeginTransaction();
 
@@ -410,7 +417,7 @@ TEST_F(GarbageCollectorTests, CommitUpdate1) {
     txn_manager->Commit(txn0, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Nothing should be able to be GC'd yet because txn1 started before txn0's commit
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     select_tuple = tested.SelectIntoBuffer(txn1, slot);
     EXPECT_TRUE(tested.select_result_);
@@ -419,9 +426,9 @@ TEST_F(GarbageCollectorTests, CommitUpdate1) {
     txn_manager->Commit(txn1, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the update and read-only txns, then deallocate the update txn
-    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection(false));
     // Read-only transaction shouldn't have made it to the deallocate queue
-    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection(false));
 
     auto *txn2 = txn_manager->BeginTransaction();
 
@@ -431,9 +438,9 @@ TEST_F(GarbageCollectorTests, CommitUpdate1) {
     txn_manager->Commit(txn2, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the read-only transaction
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
     // It shouldn't make it to the second invocation because it's read-only
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
   }
 }
 
@@ -444,6 +451,7 @@ TEST_F(GarbageCollectorTests, CommitUpdate2) {
     auto db_main = DBMain::Builder().SetUseGC(true).Build();
     auto txn_manager = db_main->GetTransactionLayer()->GetTransactionManager();
     auto gc = db_main->GetStorageLayer()->GetGarbageCollector();
+    txn_manager->SetCooperativeGC(false);
 
     GarbageCollectorDataTableTestObject tested(db_main->GetStorageLayer()->GetBlockStore().Get(), max_columns_,
                                                &generator_);
@@ -456,8 +464,8 @@ TEST_F(GarbageCollectorTests, CommitUpdate2) {
     txn_manager->Commit(txn, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink and reclaim the Insert
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
-    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
+    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection(false));
 
     storage::ProjectedRow *update = tested.GenerateRandomUpdate(&generator_);
 
@@ -468,7 +476,7 @@ TEST_F(GarbageCollectorTests, CommitUpdate2) {
     EXPECT_TRUE(tested.table_.Update(common::ManagedPointer(txn1), slot, *update));
 
     // Nothing should be able to be GC'd yet because txn1 has not committed yet
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     auto *update_tuple = tested.GenerateVersionFromUpdate(*update, *insert_tuple);
 
@@ -483,7 +491,7 @@ TEST_F(GarbageCollectorTests, CommitUpdate2) {
     txn_manager->Commit(txn1, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Nothing should be able to be GC'd yet because txn0 started before txn1's commit
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     select_tuple = tested.SelectIntoBuffer(txn0, slot);
     EXPECT_TRUE(tested.select_result_);
@@ -492,9 +500,9 @@ TEST_F(GarbageCollectorTests, CommitUpdate2) {
     txn_manager->Commit(txn0, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the update and read-only txns, then deallocate the update txn
-    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection(false));
     // Read-only transaction shouldn't have made it to the deallocate queue
-    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection(false));
 
     auto *txn2 = txn_manager->BeginTransaction();
 
@@ -504,9 +512,9 @@ TEST_F(GarbageCollectorTests, CommitUpdate2) {
     txn_manager->Commit(txn2, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the read-only transaction
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
     // It shouldn't make it to the second invocation because it's read-only
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
   }
 }
 
@@ -517,6 +525,7 @@ TEST_F(GarbageCollectorTests, AbortUpdate1) {
     auto db_main = DBMain::Builder().SetUseGC(true).Build();
     auto txn_manager = db_main->GetTransactionLayer()->GetTransactionManager();
     auto gc = db_main->GetStorageLayer()->GetGarbageCollector();
+    txn_manager->SetCooperativeGC(false);
 
     GarbageCollectorDataTableTestObject tested(db_main->GetStorageLayer()->GetBlockStore().Get(), max_columns_,
                                                &generator_);
@@ -529,8 +538,8 @@ TEST_F(GarbageCollectorTests, AbortUpdate1) {
     txn_manager->Commit(txn, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink and reclaim the Insert
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
-    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
+    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection(false));
 
     storage::ProjectedRow *update = tested.GenerateRandomUpdate(&generator_);
 
@@ -547,7 +556,7 @@ TEST_F(GarbageCollectorTests, AbortUpdate1) {
     auto *txn1 = txn_manager->BeginTransaction();
 
     // Nothing should be able to be GC'd yet because txn0 has not committed yet
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     select_tuple = tested.SelectIntoBuffer(txn1, slot);
     EXPECT_TRUE(tested.select_result_);
@@ -556,7 +565,7 @@ TEST_F(GarbageCollectorTests, AbortUpdate1) {
     txn_manager->Abort(txn0);
 
     // Aborted transactions cannot be removed from the unlink queue immediately
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     select_tuple = tested.SelectIntoBuffer(txn1, slot);
     EXPECT_TRUE(tested.select_result_);
@@ -565,9 +574,9 @@ TEST_F(GarbageCollectorTests, AbortUpdate1) {
     txn_manager->Commit(txn1, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // process the read-only transaction and aborted transcation
-    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection(false));
     // Read-only transaction shouldn't have made it to the deallocate queue, aborted transaction is deallocated
-    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection(false));
 
     auto *txn2 = txn_manager->BeginTransaction();
 
@@ -577,9 +586,9 @@ TEST_F(GarbageCollectorTests, AbortUpdate1) {
     txn_manager->Commit(txn2, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the read-only transaction
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
     // It shouldn't make it to the second invocation because it's read-only
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
   }
 }
 
@@ -590,6 +599,7 @@ TEST_F(GarbageCollectorTests, AbortUpdate2) {
     auto db_main = DBMain::Builder().SetUseGC(true).Build();
     auto txn_manager = db_main->GetTransactionLayer()->GetTransactionManager();
     auto gc = db_main->GetStorageLayer()->GetGarbageCollector();
+    txn_manager->SetCooperativeGC(false);
 
     GarbageCollectorDataTableTestObject tested(db_main->GetStorageLayer()->GetBlockStore().Get(), max_columns_,
                                                &generator_);
@@ -602,8 +612,8 @@ TEST_F(GarbageCollectorTests, AbortUpdate2) {
     txn_manager->Commit(txn, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink and reclaim the Insert
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
-    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
+    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection(false));
 
     storage::ProjectedRow *update = tested.GenerateRandomUpdate(&generator_);
 
@@ -624,7 +634,7 @@ TEST_F(GarbageCollectorTests, AbortUpdate2) {
     EXPECT_TRUE(StorageTestUtil::ProjectionListEqualShallow(tested.Layout(), select_tuple, update_tuple));
 
     // Nothing should be able to be GC'd yet because txn1 has not committed yet
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     txn_manager->Abort(txn1);
 
@@ -633,14 +643,14 @@ TEST_F(GarbageCollectorTests, AbortUpdate2) {
     EXPECT_TRUE(StorageTestUtil::ProjectionListEqualShallow(tested.Layout(), select_tuple, insert_tuple));
 
     // Aborted transactions cannot be removed from the unlink queue immediately
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     txn_manager->Commit(txn0, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // process the read-only transaction and aborted transcation
-    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection(false));
     // Read-only transaction shouldn't have made it to the deallocate queue, aborted transaction is deallocated
-    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(1U, 0U), gc->PerformGarbageCollection(false));
 
     auto *txn2 = txn_manager->BeginTransaction();
 
@@ -650,9 +660,9 @@ TEST_F(GarbageCollectorTests, AbortUpdate2) {
     txn_manager->Commit(txn2, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Unlink the read-only transaction
-    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 1U), gc->PerformGarbageCollection(false));
     // It shouldn't make it to the second invocation because it's read-only
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
   }
 }
 
@@ -663,6 +673,7 @@ TEST_F(GarbageCollectorTests, InsertUpdate1) {
     auto db_main = DBMain::Builder().SetUseGC(true).Build();
     auto txn_manager = db_main->GetTransactionLayer()->GetTransactionManager();
     auto gc = db_main->GetStorageLayer()->GetGarbageCollector();
+    txn_manager->SetCooperativeGC(false);
 
     GarbageCollectorDataTableTestObject tested(db_main->GetStorageLayer()->GetBlockStore().Get(), max_columns_,
                                                &generator_);
@@ -679,12 +690,12 @@ TEST_F(GarbageCollectorTests, InsertUpdate1) {
     EXPECT_TRUE(StorageTestUtil::ProjectionListEqualShallow(tested.Layout(), select_tuple, insert_tuple));
 
     // Nothing should be able to be GC'd yet because txn1 has not committed yet
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     txn_manager->Commit(txn1, transaction::TransactionUtil::EmptyCallback, nullptr);
 
     // Nothing should be able to be GC'd yet because txn0 started before txn1's commit
-    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 0U), gc->PerformGarbageCollection(false));
 
     storage::ProjectedRow *update = tested.GenerateRandomUpdate(&generator_);
     EXPECT_FALSE(tested.table_.Update(common::ManagedPointer(txn0), slot, *update));
@@ -695,8 +706,8 @@ TEST_F(GarbageCollectorTests, InsertUpdate1) {
     txn_manager->Abort(txn0);
 
     // Process the insert and aborted txns. Both should make it to the unlink phase
-    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection());
-    EXPECT_EQ(std::make_pair(2U, 0U), gc->PerformGarbageCollection());
+    EXPECT_EQ(std::make_pair(0U, 2U), gc->PerformGarbageCollection(false));
+    EXPECT_EQ(std::make_pair(2U, 0U), gc->PerformGarbageCollection(false));
   }
 }
 }  // namespace noisepage

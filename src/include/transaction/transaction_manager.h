@@ -80,10 +80,26 @@ class TransactionManager {
   bool GCEnabled() const { return gc_enabled_; }
 
   /**
-   * Return a copy of the completed txns queue and empty the local version
-   * @return copy of the completed txns for the GC to process
+   * TODO(Ling): hack for fake gc; remove it in the future
+   * @return number of transactions unlinked in this gc period
    */
-  TransactionQueue CompletedTransactionsForGC();
+  uint32_t NumUnlinked() { return num_unlinked_.exchange(0); }
+
+  /**
+   * TODO(Ling): hack for fake gc; remove it in the future
+   * @return number of transactions deallocated in this gc period
+   */
+  uint32_t NumDeallocated() { return num_deallocated_.exchange(0); }
+
+  /**
+   * Note: for log tests, as it will compare the redo records,
+   *    we don't want to gc the transactions before comparing the result with the desired values;
+   *    For GC tests and DAF tests, are we are testing on the result of each invocation of Process() function,
+   *    we need a way to stop the automatic invocation.
+   * Set if the transaction manager cooperatively clean up the deferred action queue
+   * @param value True if use cooperative gc at end of transaction
+   */
+  void SetCooperativeGC(bool value) { cooperative_gc_ = value; }
 
  private:
   const common::ManagedPointer<TimestampManager> timestamp_manager_;
@@ -96,6 +112,14 @@ class TransactionManager {
 
   TransactionQueue completed_txns_;
   const common::ManagedPointer<storage::LogManager> log_manager_;
+
+  // TODO(Ling): two counters to fake the original gc behavior.
+  //  eventually we will removed them after completely integrate the deferred action framework
+  std::atomic<int> num_unlinked_{0};
+  std::atomic<int> num_deallocated_{0};
+
+  // This variable is used to set if the transaction manager will do cooperative cleaning of the deferred action queue
+  bool cooperative_gc_{true};
 
   timestamp_t UpdatingCommitCriticalSection(TransactionContext *txn);
 
@@ -113,5 +137,7 @@ class TransactionManager {
   void DeallocateInsertedTupleIfVarlen(TransactionContext *txn, storage::UndoRecord *undo,
                                        const storage::TupleAccessStrategy &accessor) const;
   void GCLastUpdateOnAbort(TransactionContext *txn);
+
+  void CleanTransaction(TransactionContext *txn);
 };
 }  // namespace noisepage::transaction

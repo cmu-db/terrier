@@ -74,24 +74,23 @@ class MetricsStore {
   }
 
   /**
-   * Record metrics from GC
-   * @param txns_deallocated first entry of metrics datapoint
-   * @param txns_unlinked second entry of metrics datapoint
-   * @param buffer_unlinked third entry of metrics datapoint
-   * @param readonly_unlinked fourth entry of metrics datapoint
-   * @param interval fifth entry of metrics datapoint
-   * @param resource_metrics sixth entry of metrics datapoint
+   * Record metrics from the deferred action processed
+   * @param daf_id type of the deferred action
    */
-  void RecordGCData(uint64_t txns_deallocated, uint64_t txns_unlinked, uint64_t buffer_unlinked,
-                    uint64_t readonly_unlinked, uint64_t interval,
-                    const common::ResourceTracker::Metrics &resource_metrics) {
-    if (!ComponentEnabled(MetricsComponent::GARBAGECOLLECTION))
-      METRICS_LOG_WARN(
-          "RecordUnlinkData() called without GC metrics enabled. Was it recently disabled and the component is just "
-          "lagging?");
+  void RecordActionData(const transaction::DafId daf_id) {
+    NOISEPAGE_ASSERT(ComponentEnabled(MetricsComponent::GARBAGECOLLECTION), "GarbageCollectionMetric not enabled.");
     NOISEPAGE_ASSERT(gc_metric_ != nullptr, "GarbageCollectionMetric not allocated. Check MetricsStore constructor.");
-    gc_metric_->RecordGCData(txns_deallocated, txns_unlinked, buffer_unlinked, readonly_unlinked, interval,
-                             resource_metrics);
+    gc_metric_->RecordActionData(daf_id);
+  }
+
+  /**
+   * Record current deferred action queue size
+   * @param queue_size Size of the deferred action queue
+   */
+  void RecordQueueSize(const uint32_t queue_size) {
+    NOISEPAGE_ASSERT(ComponentEnabled(MetricsComponent::GARBAGECOLLECTION), "GarbageCollectionMetric not enabled.");
+    NOISEPAGE_ASSERT(gc_metric_ != nullptr, "GarbageCollectionMetric not allocated. Check MetricsStore constructor.");
+    gc_metric_->RecordQueueSize(queue_size);
   }
 
   /**
@@ -108,7 +107,7 @@ class MetricsStore {
   }
 
   /**
-   * Record metrics for transaction manager when ending transaction
+   * Record metrics for transaction manager when commiting transaction
    * @param is_readonly first entry of txn datapoint
    * @param resource_metrics second entry of txn datapoint
    */
@@ -119,6 +118,16 @@ class MetricsStore {
           "is just lagging?");
     NOISEPAGE_ASSERT(txn_metric_ != nullptr, "TransactionMetric not allocated. Check MetricsStore constructor.");
     txn_metric_->RecordCommitData(is_readonly, resource_metrics);
+  }
+
+  /**
+   * Record a txn finish processing
+   */
+  void RecordTxnsProcessed() {
+    if (ComponentEnabled(MetricsComponent::GARBAGECOLLECTION)) {
+      NOISEPAGE_ASSERT(gc_metric_ != nullptr, "GarbageCollectorMetric not allocated. Check MetricsStore constructor.");
+      gc_metric_->RecordTxnsProcessed();
+    }
   }
 
   /**

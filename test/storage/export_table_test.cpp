@@ -231,13 +231,9 @@ TEST_F(ExportTableTest, ExportDictionaryCompressedTableTest) {
   transaction::DeferredActionManager deferred_action_manager{common::ManagedPointer(&timestamp_manager)};
   transaction::TransactionManager txn_manager{common::ManagedPointer(&timestamp_manager),
                                               common::ManagedPointer(&deferred_action_manager),
-                                              common::ManagedPointer(&buffer_pool_),
-                                              true,
-                                              false,
-                                              DISABLED};
-  storage::GarbageCollector gc{common::ManagedPointer(&timestamp_manager),
-                               common::ManagedPointer(&deferred_action_manager), common::ManagedPointer(&txn_manager),
-                               DISABLED};
+                                              common::ManagedPointer(&buffer_pool_), true, DISABLED};
+  storage::GarbageCollector gc{common::ManagedPointer(&deferred_action_manager), common::ManagedPointer(&txn_manager)};
+
   auto tuples = StorageTestUtil::PopulateBlockRandomly(&table, block, percent_empty_, &generator_);
 
   // Manually populate the block header's arrow metadata for test initialization
@@ -261,7 +257,7 @@ TEST_F(ExportTableTest, ExportDictionaryCompressedTableTest) {
   compactor.ProcessCompactionQueue(&deferred_action_manager, &txn_manager);  // compaction pass
 
   // Need to prune the version chain in order to make sure that the second pass succeeds
-  gc.PerformGarbageCollection();
+  gc.PerformGarbageCollection(false);
   compactor.PutInQueue(block);
   compactor.ProcessCompactionQueue(&deferred_action_manager, &txn_manager);  // gathering pass
 
@@ -283,8 +279,8 @@ TEST_F(ExportTableTest, ExportDictionaryCompressedTableTest) {
     unlink(EXPORT_TEST_EXPORT_TABLE_NAME);
   }
   for (auto &entry : tuples) delete[] reinterpret_cast<byte *>(entry.second);  // reclaim memory used for bookkeeping
-  gc.PerformGarbageCollection();
-  gc.PerformGarbageCollection();  // Second call to deallocate
+  gc.PerformGarbageCollection(false);
+  gc.PerformGarbageCollection(false);  // Second call to deallocate
 }
 
 // NOLINTNEXTLINE
@@ -312,13 +308,8 @@ TEST_F(ExportTableTest, ExportVarlenTableTest) {
   transaction::DeferredActionManager deferred_action_manager{common::ManagedPointer(&timestamp_manager)};
   transaction::TransactionManager txn_manager{common::ManagedPointer(&timestamp_manager),
                                               common::ManagedPointer(&deferred_action_manager),
-                                              common::ManagedPointer(&buffer_pool_),
-                                              true,
-                                              false,
-                                              DISABLED};
-  storage::GarbageCollector gc{common::ManagedPointer(&timestamp_manager),
-                               common::ManagedPointer(&deferred_action_manager), common::ManagedPointer(&txn_manager),
-                               DISABLED};
+                                              common::ManagedPointer(&buffer_pool_), true, DISABLED};
+  storage::GarbageCollector gc{common::ManagedPointer(&deferred_action_manager), common::ManagedPointer(&txn_manager)};
   auto tuples = StorageTestUtil::PopulateBlockRandomly(&table, block, percent_empty_, &generator_);
 
   // Manually populate the block header's arrow metadata for test initialization
@@ -342,7 +333,7 @@ TEST_F(ExportTableTest, ExportVarlenTableTest) {
   compactor.ProcessCompactionQueue(&deferred_action_manager, &txn_manager);  // compaction pass
 
   // Need to prune the version chain in order to make sure that the second pass succeeds
-  gc.PerformGarbageCollection();
+  gc.PerformGarbageCollection(false);
   compactor.PutInQueue(block);
   compactor.ProcessCompactionQueue(&deferred_action_manager, &txn_manager);  // gathering pass
 
@@ -364,8 +355,8 @@ TEST_F(ExportTableTest, ExportVarlenTableTest) {
     unlink(EXPORT_TEST_EXPORT_TABLE_NAME);
   }
   for (auto &entry : tuples) delete[] reinterpret_cast<byte *>(entry.second);  // reclaim memory used for bookkeeping
-  gc.PerformGarbageCollection();
-  gc.PerformGarbageCollection();  // Second call to deallocate.
+  gc.PerformGarbageCollection(false);
+  gc.PerformGarbageCollection(false);  // Second call to deallocate.
 }
 
 }  // namespace noisepage

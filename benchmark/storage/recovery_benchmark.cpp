@@ -38,7 +38,6 @@ class RecoveryBenchmark : public benchmark::Fixture {
                          .SetWalFilePath(noisepage::BenchmarkConfig::logfile_path.data())
                          .SetUseLogging(true)
                          .SetUseGC(true)
-                         .SetUseGCThread(true)
                          .SetUseCatalog(true)
                          .SetRecordBufferSegmentSize(1e6)
                          .SetRecordBufferSegmentReuse(1e6)
@@ -58,7 +57,6 @@ class RecoveryBenchmark : public benchmark::Fixture {
       auto recovery_db_main = DBMain::Builder()
                                   .SetUseThreadRegistry(true)
                                   .SetUseGC(true)
-                                  .SetUseGCThread(true)
                                   .SetUseCatalog(true)
                                   .SetCreateDefaultDatabase(false)
                                   .Build();
@@ -83,9 +81,12 @@ class RecoveryBenchmark : public benchmark::Fixture {
 
       state->SetIterationTime(static_cast<double>(elapsed_ms) / 1000.0);
 
-      // the table can't be freed until after all GC on it is guaranteed to be done. The easy way to do that is to use a
-      // DeferredAction
-      db_main->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete tested; });
+      // In multi-threaded DAF, we need at least a double deferral in this case to guarantee the action happens afer
+      // transactions in the tests has unlinked
+      auto daf = db_main->GetTransactionLayer()->GetDeferredActionManager();
+      daf->RegisterDeferredAction(
+          [=]() { daf->RegisterDeferredAction([=]() { delete tested; }, transaction::DafId::INVALID); },
+          transaction::DafId::INVALID);
     }
     state->SetItemsProcessed(num_txns_ * state->iterations());
   }
@@ -147,7 +148,6 @@ BENCHMARK_DEFINE_F(RecoveryBenchmark, IndexRecovery)(benchmark::State &state) {
                        .SetWalFilePath(noisepage::BenchmarkConfig::logfile_path.data())
                        .SetUseLogging(true)
                        .SetUseGC(true)
-                       .SetUseGCThread(true)
                        .SetUseCatalog(true)
                        .SetRecordBufferSegmentSize(1e6)
                        .SetRecordBufferSegmentReuse(1e6)
@@ -210,7 +210,6 @@ BENCHMARK_DEFINE_F(RecoveryBenchmark, IndexRecovery)(benchmark::State &state) {
     auto recovery_db_main = DBMain::Builder()
                                 .SetUseThreadRegistry(true)
                                 .SetUseGC(true)
-                                .SetUseGCThread(true)
                                 .SetUseCatalog(true)
                                 .SetCreateDefaultDatabase(false)
                                 .Build();

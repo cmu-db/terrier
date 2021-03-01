@@ -23,8 +23,6 @@ class LoggingBenchmark : public benchmark::Fixture {
   std::default_random_engine generator_;
   storage::LogManager *log_manager_ = nullptr;
   storage::GarbageCollector *gc_;
-  storage::GarbageCollectorThread *gc_thread_ = nullptr;
-  const std::chrono::microseconds gc_period_{1000};
   common::DedicatedThreadRegistry thread_registry_ = common::DedicatedThreadRegistry(nullptr);
 
   // Settings for log manager
@@ -55,9 +53,8 @@ BENCHMARK_DEFINE_F(LoggingBenchmark, TPCCish)(benchmark::State &state) {
     // log all of the Inserts from table creation
     log_manager_->ForceFlush();
 
-    gc_ = new storage::GarbageCollector(common::ManagedPointer(tested.GetTimestampManager()), DISABLED,
-                                        common::ManagedPointer(tested.GetTxnManager()), DISABLED);
-    gc_thread_ = new storage::GarbageCollectorThread(common::ManagedPointer(gc_), gc_period_, nullptr);
+    gc_ = new storage::GarbageCollector(common::ManagedPointer(tested.GetDeferredActionManager()),
+                                        common::ManagedPointer(tested.GetTxnManager()));
     const auto result = tested.SimulateOltp(num_txns_, BenchmarkConfig::num_threads);
     abort_count += result.first;
     uint64_t elapsed_ms;
@@ -68,7 +65,6 @@ BENCHMARK_DEFINE_F(LoggingBenchmark, TPCCish)(benchmark::State &state) {
     state.SetIterationTime(static_cast<double>(result.second + elapsed_ms) / 1000.0);
     log_manager_->PersistAndStop();
     delete log_manager_;
-    delete gc_thread_;
     delete gc_;
     unlink(noisepage::BenchmarkConfig::logfile_path.data());
   }
@@ -97,9 +93,8 @@ BENCHMARK_DEFINE_F(LoggingBenchmark, HighAbortRate)(benchmark::State &state) {
     // log all of the Inserts from table creation
     log_manager_->ForceFlush();
 
-    gc_ = new storage::GarbageCollector(common::ManagedPointer(tested.GetTimestampManager()), DISABLED,
-                                        common::ManagedPointer(tested.GetTxnManager()), DISABLED);
-    gc_thread_ = new storage::GarbageCollectorThread(common::ManagedPointer(gc_), gc_period_, nullptr);
+    gc_ = new storage::GarbageCollector(common::ManagedPointer(tested.GetDeferredActionManager()),
+                                        common::ManagedPointer(tested.GetTxnManager()));
     const auto result = tested.SimulateOltp(num_txns_, BenchmarkConfig::num_threads);
     abort_count += result.first;
     uint64_t elapsed_ms;
@@ -110,7 +105,6 @@ BENCHMARK_DEFINE_F(LoggingBenchmark, HighAbortRate)(benchmark::State &state) {
     state.SetIterationTime(static_cast<double>(result.second + elapsed_ms) / 1000.0);
     log_manager_->PersistAndStop();
     delete log_manager_;
-    delete gc_thread_;
     delete gc_;
     unlink(noisepage::BenchmarkConfig::logfile_path.data());
   }
@@ -138,9 +132,8 @@ BENCHMARK_DEFINE_F(LoggingBenchmark, SingleStatementInsert)(benchmark::State &st
     // log all of the Inserts from table creation
     log_manager_->ForceFlush();
 
-    gc_ = new storage::GarbageCollector(common::ManagedPointer(tested.GetTimestampManager()), DISABLED,
-                                        common::ManagedPointer(tested.GetTxnManager()), DISABLED);
-    gc_thread_ = new storage::GarbageCollectorThread(common::ManagedPointer(gc_), gc_period_, nullptr);
+    gc_ = new storage::GarbageCollector(common::ManagedPointer(tested.GetDeferredActionManager()),
+                                        common::ManagedPointer(tested.GetTxnManager()));
     const auto result = tested.SimulateOltp(num_txns_, BenchmarkConfig::num_threads);
     abort_count += result.first;
     uint64_t elapsed_ms;
@@ -151,7 +144,6 @@ BENCHMARK_DEFINE_F(LoggingBenchmark, SingleStatementInsert)(benchmark::State &st
     state.SetIterationTime(static_cast<double>(result.second + elapsed_ms) / 1000.0);
     log_manager_->PersistAndStop();
     delete log_manager_;
-    delete gc_thread_;
     delete gc_;
     unlink(noisepage::BenchmarkConfig::logfile_path.data());
   }
@@ -179,9 +171,8 @@ BENCHMARK_DEFINE_F(LoggingBenchmark, SingleStatementUpdate)(benchmark::State &st
     // log all of the Inserts from table creation
     log_manager_->ForceFlush();
 
-    gc_ = new storage::GarbageCollector(common::ManagedPointer(tested.GetTimestampManager()), DISABLED,
-                                        common::ManagedPointer(tested.GetTxnManager()), DISABLED);
-    gc_thread_ = new storage::GarbageCollectorThread(common::ManagedPointer(gc_), gc_period_, nullptr);
+    gc_ = new storage::GarbageCollector(common::ManagedPointer(tested.GetDeferredActionManager()),
+                                        common::ManagedPointer(tested.GetTxnManager()));
     const auto result = tested.SimulateOltp(num_txns_, BenchmarkConfig::num_threads);
     abort_count += result.first;
     uint64_t elapsed_ms;
@@ -192,7 +183,6 @@ BENCHMARK_DEFINE_F(LoggingBenchmark, SingleStatementUpdate)(benchmark::State &st
     state.SetIterationTime(static_cast<double>(result.second + elapsed_ms) / 1000.0);
     log_manager_->PersistAndStop();
     delete log_manager_;
-    delete gc_thread_;
     delete gc_;
     unlink(noisepage::BenchmarkConfig::logfile_path.data());
   }
@@ -220,9 +210,8 @@ BENCHMARK_DEFINE_F(LoggingBenchmark, SingleStatementSelect)(benchmark::State &st
     // log all of the Inserts from table creation
     log_manager_->ForceFlush();
 
-    gc_ = new storage::GarbageCollector(common::ManagedPointer(tested.GetTimestampManager()), DISABLED,
-                                        common::ManagedPointer(tested.GetTxnManager()), DISABLED);
-    gc_thread_ = new storage::GarbageCollectorThread(common::ManagedPointer(gc_), gc_period_, nullptr);
+    gc_ = new storage::GarbageCollector(common::ManagedPointer(tested.GetDeferredActionManager()),
+                                        common::ManagedPointer(tested.GetTxnManager()));
     const auto result = tested.SimulateOltp(num_txns_, BenchmarkConfig::num_threads);
     abort_count += result.first;
     uint64_t elapsed_ms;
@@ -233,7 +222,6 @@ BENCHMARK_DEFINE_F(LoggingBenchmark, SingleStatementSelect)(benchmark::State &st
     state.SetIterationTime(static_cast<double>(result.second + elapsed_ms) / 1000.0);
     log_manager_->PersistAndStop();
     delete log_manager_;
-    delete gc_thread_;
     delete gc_;
     unlink(noisepage::BenchmarkConfig::logfile_path.data());
   }

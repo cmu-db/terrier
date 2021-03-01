@@ -91,13 +91,9 @@ TEST_F(BlockCompactorTest, CompactionTest) {
     transaction::DeferredActionManager deferred_action_manager{common::ManagedPointer(&timestamp_manager)};
     transaction::TransactionManager txn_manager{common::ManagedPointer(&timestamp_manager),
                                                 common::ManagedPointer(&deferred_action_manager),
-                                                common::ManagedPointer(&buffer_pool_),
-                                                true,
-                                                false,
-                                                DISABLED};
-    storage::GarbageCollector gc{common::ManagedPointer(&timestamp_manager),
-                                 common::ManagedPointer(&deferred_action_manager), common::ManagedPointer(&txn_manager),
-                                 DISABLED};
+                                                common::ManagedPointer(&buffer_pool_), true, DISABLED};
+    storage::GarbageCollector gc{common::ManagedPointer(&deferred_action_manager),
+                                 common::ManagedPointer(&txn_manager)};
 
     auto tuples = StorageTestUtil::PopulateBlockRandomly(&table, block, percent_empty_, &generator_);
     auto num_tuples = tuples.size();
@@ -150,8 +146,9 @@ TEST_F(BlockCompactorTest, CompactionTest) {
 
     for (auto &entry : tuples) delete[] reinterpret_cast<byte *>(entry.second);  // reclaim memory used for bookkeeping
 
-    gc.PerformGarbageCollection();
-    gc.PerformGarbageCollection();  // Second call to deallocate.
+    gc.PerformGarbageCollection(false);
+    gc.PerformGarbageCollection(false);
+    gc.PerformGarbageCollection(false);  // Third call to deallocate.
     // Deallocate all the leftover versions
     storage::StorageUtil::DeallocateVarlens(block, accessor);
     block_store_.Release(block);
@@ -178,13 +175,9 @@ TEST_F(BlockCompactorTest, GatherTest) {
     transaction::DeferredActionManager deferred_action_manager{common::ManagedPointer(&timestamp_manager)};
     transaction::TransactionManager txn_manager{common::ManagedPointer(&timestamp_manager),
                                                 common::ManagedPointer(&deferred_action_manager),
-                                                common::ManagedPointer(&buffer_pool_),
-                                                true,
-                                                false,
-                                                DISABLED};
-    storage::GarbageCollector gc{common::ManagedPointer(&timestamp_manager),
-                                 common::ManagedPointer(&deferred_action_manager), common::ManagedPointer(&txn_manager),
-                                 DISABLED};
+                                                common::ManagedPointer(&buffer_pool_), true, DISABLED};
+    storage::GarbageCollector gc{common::ManagedPointer(&deferred_action_manager),
+                                 common::ManagedPointer(&txn_manager)};
 
     auto tuples = StorageTestUtil::PopulateBlockRandomly(&table, block, percent_empty_, &generator_);
     auto num_tuples = tuples.size();
@@ -205,7 +198,7 @@ TEST_F(BlockCompactorTest, GatherTest) {
     compactor.ProcessCompactionQueue(&deferred_action_manager, &txn_manager);  // compaction pass
 
     // Need to prune the version chain in order to make sure that the second pass succeeds
-    gc.PerformGarbageCollection();
+    gc.PerformGarbageCollection(false);
     compactor.PutInQueue(block);
     compactor.ProcessCompactionQueue(&deferred_action_manager, &txn_manager);  // gathering pass
 
@@ -258,8 +251,9 @@ TEST_F(BlockCompactorTest, GatherTest) {
 
     for (auto &entry : tuples) delete[] reinterpret_cast<byte *>(entry.second);  // reclaim memory used for bookkeeping
 
-    gc.PerformGarbageCollection();
-    gc.PerformGarbageCollection();  // Second call to deallocate.
+    gc.PerformGarbageCollection(false);
+    gc.PerformGarbageCollection(false);
+    gc.PerformGarbageCollection(false);  // Third call to deallocate.
     // Deallocate all the leftover gathered varlens
     // No need to gather the ones still in the block because they are presumably all gathered
     for (storage::col_id_t col_id : layout.AllColumns())
@@ -288,13 +282,9 @@ TEST_F(BlockCompactorTest, DictionaryCompressionTest) {
     transaction::DeferredActionManager deferred_action_manager{common::ManagedPointer(&timestamp_manager)};
     transaction::TransactionManager txn_manager{common::ManagedPointer(&timestamp_manager),
                                                 common::ManagedPointer(&deferred_action_manager),
-                                                common::ManagedPointer(&buffer_pool_),
-                                                true,
-                                                false,
-                                                DISABLED};
-    storage::GarbageCollector gc{common::ManagedPointer(&timestamp_manager),
-                                 common::ManagedPointer(&deferred_action_manager), common::ManagedPointer(&txn_manager),
-                                 DISABLED};
+                                                common::ManagedPointer(&buffer_pool_), true, DISABLED};
+    storage::GarbageCollector gc{common::ManagedPointer(&deferred_action_manager),
+                                 common::ManagedPointer(&txn_manager)};
 
     auto tuples = StorageTestUtil::PopulateBlockRandomly(&table, block, percent_empty_, &generator_);
     auto num_tuples = tuples.size();
@@ -315,7 +305,7 @@ TEST_F(BlockCompactorTest, DictionaryCompressionTest) {
     compactor.ProcessCompactionQueue(&deferred_action_manager, &txn_manager);  // compaction pass
 
     // Need to prune the version chain in order to make sure that the second pass succeeds
-    gc.PerformGarbageCollection();
+    gc.PerformGarbageCollection(false);
     compactor.PutInQueue(block);
     compactor.ProcessCompactionQueue(&deferred_action_manager, &txn_manager);  // gathering pass
 
@@ -384,8 +374,9 @@ TEST_F(BlockCompactorTest, DictionaryCompressionTest) {
 
     for (auto &entry : tuples) delete[] reinterpret_cast<byte *>(entry.second);  // reclaim memory used for bookkeeping
 
-    gc.PerformGarbageCollection();
-    gc.PerformGarbageCollection();  // Second call to deallocate.
+    gc.PerformGarbageCollection(false);
+    gc.PerformGarbageCollection(false);
+    gc.PerformGarbageCollection(false);  // Third call to deallocate.
     // Deallocate all the leftover gathered varlens
     // No need to gather the ones still in the block because they are presumably all gathered
     for (storage::col_id_t col_id : layout.AllColumns())

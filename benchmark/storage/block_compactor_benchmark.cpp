@@ -13,6 +13,7 @@
 namespace noisepage {
 class BlockCompactorBenchmark : public benchmark::Fixture {
  protected:
+  BlockCompactorBenchmark() = default;
   storage::BlockStore block_store_{5000, 5000};
   std::default_random_engine generator_;
   storage::RecordBufferSegmentPool buffer_pool_{100000, 100000};
@@ -24,13 +25,9 @@ class BlockCompactorBenchmark : public benchmark::Fixture {
   transaction::DeferredActionManager deferred_action_manager_{common::ManagedPointer(&timestamp_manager_)};
   transaction::TransactionManager txn_manager_{common::ManagedPointer(&timestamp_manager_),
                                                common::ManagedPointer(&deferred_action_manager_),
-                                               common::ManagedPointer(&buffer_pool_),
-                                               true,
-                                               false,
-                                               DISABLED};
-  storage::GarbageCollector gc_{common::ManagedPointer(&timestamp_manager_),
-                                common::ManagedPointer(&deferred_action_manager_),
-                                common::ManagedPointer(&txn_manager_), nullptr};
+                                               common::ManagedPointer(&buffer_pool_), true, DISABLED};
+  storage::GarbageCollector gc_{common::ManagedPointer(&deferred_action_manager_),
+                                common::ManagedPointer(&txn_manager_)};
   storage::BlockCompactor compactor_;
 
   uint32_t num_blocks_ = 500;
@@ -61,8 +58,8 @@ class BlockCompactorBenchmark : public benchmark::Fixture {
         common::ScopedTimer<std::chrono::milliseconds> timer(&compaction_ms);
         compactor_.ProcessCompactionQueue(&deferred_action_manager_, &txn_manager_);
       }
-      gc_.PerformGarbageCollection();
-      gc_.PerformGarbageCollection();
+      gc_.PerformGarbageCollection(false);
+      gc_.PerformGarbageCollection(false);
       for (storage::RawBlock *block : blocks) compactor_.PutInQueue(block);
       uint64_t gather_ms;
       {
@@ -100,8 +97,8 @@ class BlockCompactorBenchmark : public benchmark::Fixture {
         common::ScopedTimer<std::chrono::milliseconds> timer(&elapsed_ms);
         compactor_.ProcessCompactionQueue(&deferred_action_manager_, &txn_manager_);
       }
-      gc_.PerformGarbageCollection();
-      gc_.PerformGarbageCollection();
+      gc_.PerformGarbageCollection(false);
+      gc_.PerformGarbageCollection(false);
       for (storage::RawBlock *block : blocks) block_store_.Release(block);
       state.SetIterationTime(static_cast<double>(elapsed_ms) / 1000.0);
     }
@@ -128,8 +125,8 @@ class BlockCompactorBenchmark : public benchmark::Fixture {
       }
       for (storage::RawBlock *block : blocks) compactor_.PutInQueue(block);
       compactor_.ProcessCompactionQueue(&deferred_action_manager_, &txn_manager_);
-      gc_.PerformGarbageCollection();
-      gc_.PerformGarbageCollection();
+      gc_.PerformGarbageCollection(false);
+      gc_.PerformGarbageCollection(false);
       for (storage::RawBlock *block : blocks) compactor_.PutInQueue(block);
       uint64_t time;
       {

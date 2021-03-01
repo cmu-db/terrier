@@ -65,7 +65,6 @@ class MessengerTests : public TerrierTest {
                        .SetUseSettingsManager(false)
                        .SetUseGC(true)
                        .SetUseCatalog(true)
-                       .SetUseGCThread(true)
                        .SetUseTrafficCop(true)
                        .SetUseStatsStorage(true)
                        .SetUseLogging(true)

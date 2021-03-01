@@ -56,7 +56,7 @@ void DatabaseCatalog::TearDown(const common::ManagedPointer<transaction::Transac
   // No new transactions can see these object but there may be deferred index
   // and other operation.  Therefore, we need to defer the deallocation on delete
   txn->RegisterCommitAction([=](transaction::DeferredActionManager *deferred_action_manager) {
-    deferred_action_manager->RegisterDeferredAction(dbc_nuke);
+    deferred_action_manager->RegisterDeferredAction(dbc_nuke, transaction::DafId::MEMORY_DEALLOCATION);
   });
 }
 
@@ -153,7 +153,15 @@ bool DatabaseCatalog::SetTablePointer(const common::ManagedPointer<transaction::
   // assurances about object lifetimes in a multi-threaded GC situation.
   txn->RegisterAbortAction([=](transaction::DeferredActionManager *deferred_action_manager) {
     deferred_action_manager->RegisterDeferredAction(
-        [=]() { deferred_action_manager->RegisterDeferredAction([=]() { delete table_ptr; }); });
+        [=]() {
+          deferred_action_manager->RegisterDeferredAction(
+              [=]() {
+                deferred_action_manager->RegisterDeferredAction([=]() { delete table_ptr; },
+                                                                transaction::DafId::MEMORY_DEALLOCATION);
+              },
+              transaction::DafId::MEMORY_DEALLOCATION);
+        },
+        transaction::DafId::MEMORY_DEALLOCATION);
   });
   return SetClassPointer(txn, table, table_ptr, postgres::PgClass::REL_PTR.oid_);
 }
@@ -174,7 +182,8 @@ bool DatabaseCatalog::SetIndexPointer(const common::ManagedPointer<transaction::
         if (index_ptr->Type() == storage::index::IndexType::BWTREE) {
           garbage_collector->UnregisterIndexForGC(common::ManagedPointer(index_ptr));
         }
-        deferred_action_manager->RegisterDeferredAction([=]() { delete index_ptr; });
+        deferred_action_manager->RegisterDeferredAction([=]() { delete index_ptr; },
+                                                        transaction::DafId::MEMORY_DEALLOCATION);
       });
   return SetClassPointer(txn, index, index_ptr, postgres::PgClass::REL_PTR.oid_);
 }
@@ -361,7 +370,8 @@ bool DatabaseCatalog::SetFunctionContextPointer(common::ManagedPointer<transacti
 
   // The catalog owns this pointer now, so if the txn ends up aborting, we need to make sure it gets freed.
   txn->RegisterAbortAction([=](transaction::DeferredActionManager *deferred_action_manager) {
-    deferred_action_manager->RegisterDeferredAction([=]() { delete func_context; });
+    deferred_action_manager->RegisterDeferredAction([=]() { delete func_context; },
+                                                    transaction::DafId::MEMORY_DEALLOCATION);
   });
 
   return pg_proc_.SetProcCtxPtr(txn, proc_oid, func_context);

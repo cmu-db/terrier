@@ -138,6 +138,7 @@ TEST_F(TopKElementsTests, SortedKeyTest) {
     // TODO(pavlo): This text case is in correct because we can't
     // guarantee that the keys we shove in will have the exact amount
     // that we originally set them to.
+
     OPTIMIZER_LOG_TRACE("Top-{0}: {1} <-> {2}", i, key, expected_key);
     // EXPECT_EQ(key, expected_key) << "Iteration #" << i;
     i++;

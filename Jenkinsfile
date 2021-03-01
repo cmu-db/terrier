@@ -527,6 +527,50 @@ pipeline {
                 }
             }
         }
+        stage('Self-Driving End-to-End Test') {
+            agent {
+                docker {
+                    image 'noisepage:focal'
+                    args '--cap-add sys_ptrace -v /jenkins/ccache:/home/jenkins/.ccache'
+                }
+            }
+            steps {
+                sh 'echo $NODE_NAME'
+                sh script: 'echo y | sudo ./script/installation/packages.sh all', label: 'Installing packages'
+
+                sh script: '''
+                mkdir build
+                cd build
+                cmake -GNinja -DNOISEPAGE_UNITY_BUILD=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_BUILD_TYPE=Release -DNOISEPAGE_USE_ASAN=OFF -DNOISEPAGE_USE_JEMALLOC=ON -DNOISEPAGE_BUILD_TESTS=OFF  -DNOISEPAGE_BUILD_SELF_DRIVING_TESTS=ON ..
+                ninja mini_runners''', label: 'Self-driving tests (Compile mini_runners)'
+
+                // The parameters to the mini_runners target are (arbitrarily picked to complete tests within a reasonable time / picked to exercise all OUs).
+                // Specifically, the parameters chosen are:
+                // - mini_runner_rows_limit=100, which sets the maximal number of rows/tuples processed to be 100 (small table)
+                // - rerun=0, which skips rerun since we are not testing benchmark performance here
+                // - warm_num=1, which also tests the warm up phase for the mini_runners.
+                // With the current set of parameters, the input generation process will finish under 10min
+                sh script :'''
+                cd build/bin
+                ../benchmark/mini_runners --mini_runner_rows_limit=100 --rerun=0 --warm_num=1
+                ''', label: 'Mini-trainer input generation'
+
+                sh script: 'sudo lsof -i -P -n | grep LISTEN || true', label: 'Check ports.'
+
+                sh script: '''
+                cd build
+                export BUILD_ABS_PATH=`pwd`
+                timeout 10m ninja self_driving_test
+                ''', label: 'Running self-driving test'
+
+                sh script: 'sudo lsof -i -P -n | grep LISTEN || true', label: 'Check ports.'
+            }
+            post {
+                cleanup {
+                    deleteDir()
+                }
+            }
+        }
         stage('Microbenchmark') {
             agent { label 'benchmark' }
             steps {

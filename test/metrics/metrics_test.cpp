@@ -40,7 +40,6 @@ class MetricsTests : public TerrierTest {
                    .SetUseSettingsManager(true)
                    .SetUseGC(true)
                    .SetUseCatalog(true)
-                   .SetUseGCThread(true)
                    .SetUseTrafficCop(true)
                    .SetUseStatsStorage(true)
                    .SetUseLogging(true)
@@ -58,7 +57,10 @@ class MetricsTests : public TerrierTest {
     catalog_ = db_main_->GetCatalogLayer()->GetCatalog();
   }
   void TearDown() override {
-    db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete sql_table_; });
+    // In single-threaded DAF, we need a single deferral in this case to guarantee the action happens afer
+    // transactions in the tests has unlinked
+    db_main_->GetTransactionLayer()->GetDeferredActionManager()->RegisterDeferredAction([=]() { delete sql_table_; },
+                                                                                        transaction::DafId::INVALID);
   }
 
   std::default_random_engine generator_;
