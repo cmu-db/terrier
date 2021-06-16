@@ -1,6 +1,7 @@
 #include "self_driving/planning/pilot_util.h"
 
 #include "binder/bind_node_visitor.h"
+#include "catalog/catalog_accessor.h"
 #include "common/error/error_code.h"
 #include "common/error/exception.h"
 #include "common/managed_pointer.h"
@@ -35,6 +36,7 @@
 #include "storage/sql_table.h"
 #include "task/task.h"
 #include "task/task_manager.h"
+#include "transaction/transaction_manager.h"
 #include "util/query_exec_util.h"
 
 namespace noisepage::selfdriving::pilot {
@@ -47,11 +49,15 @@ void PilotUtil::ApplyAction(const pilot::PlanningContext &planning_context, cons
   // just pick a random database in PlanningContext
   if (db_oid == catalog::INVALID_DATABASE_OID) db_oid = *planning_context.GetDBOids().begin();
 
-  auto &query_exec_util = planning_context.GetQueryExecUtil();
-  if (what_if)
+  auto policy = planning_context.GetTxnManager()->GetDefaultTransactionPolicy();
+  policy.replication_ = transaction::ReplicationPolicy::DISABLE;
+
+  auto query_exec_util = planning_context.GetQueryExecUtil();
+  if (what_if) {
     query_exec_util->UseTransaction(db_oid, planning_context.GetTxnContext(db_oid));
-  else
-    query_exec_util->BeginTransaction(db_oid);
+  } else {
+    query_exec_util->BeginTransaction(db_oid, policy);
+  }
 
   bool is_query_ddl;
   {
@@ -74,10 +80,11 @@ void PilotUtil::ApplyAction(const pilot::PlanningContext &planning_context, cons
   }
 
   query_exec_util->ClearPlan(sql_query);
-  if (what_if)
+  if (what_if) {
     query_exec_util->UseTransaction(db_oid, nullptr);
-  else
+  } else {
     query_exec_util->EndTransaction(true);
+  }
 }
 
 void PilotUtil::GetQueryPlans(const PlanningContext &planning_context,
@@ -92,7 +99,7 @@ void PilotUtil::GetQueryPlans(const PlanningContext &planning_context,
 
   // Use QueryExecUtil since we want the abstract plan nodes.
   // We don't care about compilation right now.
-  auto &query_exec_util = planning_context.GetQueryExecUtil();
+  auto query_exec_util = planning_context.GetQueryExecUtil();
   for (auto qid : qids) {
     auto query_text = forecast->GetQuerytextByQid(qid);
     auto db_oid = forecast->GetDboidByQid(qid);
@@ -203,7 +210,7 @@ std::unique_ptr<metrics::PipelineMetricRawData> PilotUtil::CollectPipelineFeatur
 
     if (execute_query) {
       // Execute the queries to get features with counters
-      common::Future<task::DummyResult> sync;
+      common::FutureDummy sync;
       execution::exec::ExecutionSettings settings{};
       settings.is_counters_enabled_ = true;
       settings.is_pipeline_metrics_enabled_ = true;
@@ -214,18 +221,32 @@ std::unique_ptr<metrics::PipelineMetricRawData> PilotUtil::CollectPipelineFeatur
       //  PlanningContext to get the latest modifications (e.g. index changes). We punt on this since we focus on
       //  using the stats to get the features instead of executing queries. We might eventually delete this code path
       //  as well.
-      planning_context.GetTaskManager()->AddTask(std::make_unique<task::TaskDML>(
-          db_oid, query_text, std::make_unique<optimizer::TrivialCostModel>(),
-          std::vector<std::vector<parser::ConstantValueExpression>>(*params), std::vector<type::TypeId>(*param_types),
-          nullptr, metrics_manager, settings, true, true, std::make_optional<execution::query_id_t>(qid),
-          common::ManagedPointer(&sync)));
+      planning_context.GetTaskManager()->AddTask(
+          task::TaskDML::Builder()
+              .SetDatabaseOid(db_oid)
+              .SetQueryText(std::move(query_text))
+              .SetFuture(common::ManagedPointer(&sync))
+              // Per the discussion in #1594, on the copying of params and param_types, by Lin:
+              // Synchronous tasks don't need copying, but asynchronous tasks may go out of the scope of the original
+              // params and param_types. If this becomes too expensive, we may be able to avoid copying for synchronous
+              // tasks by adding a new API (see the comments at the top of this code block). Addressing the life cycle
+              // issue for asynchronous tasks may be challenging though.
+              .SetParameters(*params)
+              .SetParameterTypes(*param_types)
+              .SetMetricsManager(metrics_manager)
+              .SetShouldSkipQueryCache(true)
+              .SetShouldForceAbort(true)
+              .SetOverrideQueryId(qid)
+              .SetExecutionSettings(settings)
+              .Build());
+
       auto future_result = sync.WaitFor(Pilot::FUTURE_TIMEOUT);
       if (!future_result.has_value()) {
         throw PILOT_EXCEPTION("Future timed out.", common::ErrorCode::ERRCODE_IO_ERROR);
       }
     } else {
       // Just compile the queries (generate the bytecodes) to get features with statistics
-      auto &query_util = planning_context.GetQueryExecUtil();
+      auto query_util = planning_context.GetQueryExecUtil();
       query_util->UseTransaction(db_oid, planning_context.GetTxnContext(db_oid));
       // TODO(lin): Do we need to pass in any settings?
       execution::exec::ExecutionSettings settings{};
@@ -453,11 +474,6 @@ void PilotUtil::ComputeTableSizeRatios(const PlanningContext &planning_context, 
   // Maps from db-table oid to the number of rows (acquired from pg_statistic)
   std::unordered_map<db_table_oid_pair, uint64_t, DBTableOidPairHasher> table_sizes;
 
-  // Get <table_id, num_rows> pairs with num_rows > 0
-  auto query = fmt::format(
-      "select starelid, max(stanumrows) as num_rows from pg_statistic group by starelid "
-      "having max(stanumrows) > 0;");
-
   // Get stats from all databases in the forecasted workload
   for (auto db_oid : planning_context.GetDBOids()) {
     auto to_row_fn = [&table_sizes, db_oid, memory_info](const std::vector<execution::sql::Val *> &values) {
@@ -469,10 +485,15 @@ void PilotUtil::ComputeTableSizeRatios(const PlanningContext &planning_context, 
       memory_info->table_oids_.emplace_back(std::make_pair(db_oid, table_oid));
     };
 
-    common::Future<task::DummyResult> sync;
-    task_manager->AddTask(std::make_unique<task::TaskDML>(db_oid, query,
-                                                          std::make_unique<optimizer::TrivialCostModel>(), false,
-                                                          to_row_fn, common::ManagedPointer(&sync)));
+    common::FutureDummy sync;
+    task_manager->AddTask(task::TaskDML::Builder()
+                              .SetDatabaseOid(db_oid)
+                              // Get <table_id, num_rows> pairs with num_rows > 0
+                              .SetQueryText("select starelid, max(stanumrows) as num_rows from pg_statistic group by "
+                                            "starelid having max(stanumrows) > 0;")
+                              .SetFuture(common::ManagedPointer(&sync))
+                              .SetTupleFn(to_row_fn)
+                              .Build());
 
     auto future_result = sync.WaitFor(Pilot::FUTURE_TIMEOUT);
     if (!future_result.has_value()) {
@@ -576,7 +597,7 @@ void PilotUtil::EstimateCreateIndexAction(const PlanningContext &planning_contex
   // Just compile the queries (generate the bytecodes) to get features with statistics
   std::string query_text = create_action->GetSQLCommand();
 
-  auto &query_util = planning_context.GetQueryExecUtil();
+  auto query_util = planning_context.GetQueryExecUtil();
   auto db_oid = create_action->GetDatabaseOid();
   query_util->UseTransaction(db_oid, planning_context.GetTxnContext(db_oid));
 

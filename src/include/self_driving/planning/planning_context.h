@@ -73,17 +73,9 @@ class PlanningContext {
                   common::ManagedPointer<optimizer::StatsStorage> stats_storage,
                   common::ManagedPointer<transaction::TransactionManager> txn_manager,
                   std::unique_ptr<util::QueryExecUtil> query_exec_util,
-                  common::ManagedPointer<task::TaskManager> task_manager)
-      : ou_model_save_path_(std::move(ou_model_save_path)),
-        interference_model_save_path_(std::move(interference_model_save_path)),
-        catalog_(catalog),
-        metrics_thread_(metrics_thread),
-        model_server_manager_(model_server_manager),
-        settings_manager_(settings_manager),
-        stats_storage_(stats_storage),
-        txn_manager_(txn_manager),
-        query_exec_util_(std::move(query_exec_util)),
-        task_manager_(task_manager) {}
+                  common::ManagedPointer<task::TaskManager> task_manager);
+
+  ~PlanningContext();
 
   /** @brief Getter for ou_model_save_path */
   const std::string &GetOuModelSavePath() const { return ou_model_save_path_; }
@@ -112,7 +104,9 @@ class PlanningContext {
   common::ManagedPointer<transaction::TransactionManager> GetTxnManager() const { return txn_manager_; }
 
   /** @brief Getter for query_exec_util_ */
-  const std::unique_ptr<util::QueryExecUtil> &GetQueryExecUtil() const { return query_exec_util_; }
+  common::ManagedPointer<util::QueryExecUtil> GetQueryExecUtil() const {
+    return common::ManagedPointer(query_exec_util_);
+  }
 
   /** @brief Getter for task_manager_ */
   common::ManagedPointer<task::TaskManager> GetTaskManager() const { return task_manager_; }

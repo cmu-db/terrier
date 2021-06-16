@@ -1,4 +1,5 @@
 #include "metrics/query_trace_metric.h"
+
 #include "common/json.h"
 #include "execution/sql/value_util.h"
 #include "optimizer/cost_model/trivial_cost_model.h"
@@ -29,39 +30,43 @@ void QueryTraceMetricRawData::SubmitFrequencyRecordJob(uint64_t timestamp,
   std::string query = QueryTraceMetricRawData::QUERY_OBSERVED_INSERT_STMT;
   std::vector<std::vector<parser::ConstantValueExpression>> params_vec;
   for (auto &info : freqs) {
-    std::vector<parser::ConstantValueExpression> param_vec(3);
-
-    // Since the frequency information is per segment interval,
-    // we record the timestamp (i.e., low_timestamp_) corresponding to it.
-    param_vec[0] = parser::ConstantValueExpression(type::TypeId::BIGINT, execution::sql::Integer(timestamp));
-
-    // Record the query identifier.
-    param_vec[1] =
-        parser::ConstantValueExpression(type::TypeId::INTEGER, execution::sql::Integer(info.first.UnderlyingValue()));
-
-    // Record how many queries seen
-    param_vec[2] =
-        parser::ConstantValueExpression(type::TypeId::REAL, execution::sql::Real(static_cast<double>(info.second)));
+    std::vector<parser::ConstantValueExpression> param_vec = {
+        // Since the frequency information is per segment interval,
+        // we record the timestamp (i.e., low_timestamp_) corresponding to it.
+        parser::ConstantValueExpression(type::TypeId::BIGINT, execution::sql::Integer(timestamp)),
+        // Record the query identifier.
+        parser::ConstantValueExpression(type::TypeId::INTEGER, execution::sql::Integer(info.first.UnderlyingValue())),
+        // Record how many queries seen
+        parser::ConstantValueExpression(type::TypeId::REAL, execution::sql::Real(static_cast<double>(info.second))),
+    };
     params_vec.emplace_back(std::move(param_vec));
   }
 
   // Submit the insert request if not empty
   std::vector<type::TypeId> param_types = {type::TypeId::BIGINT, type::TypeId::INTEGER, type::TypeId::REAL};
-  task_manager->AddTask(std::make_unique<task::TaskDML>(catalog::INVALID_DATABASE_OID, query,
-                                                        std::make_unique<optimizer::TrivialCostModel>(), false,
-                                                        std::move(params_vec), std::move(param_types)));
+  task_manager->AddTask(
+      task::TaskDML::Builder()
+          .SetDatabaseOid(task_manager->GetDatabaseOid())
+          .SetQueryText(std::move(query))
+          // TODO(WAN): #1595
+          .SetTransactionPolicy({transaction::DurabilityPolicy::SYNC, transaction::ReplicationPolicy::DISABLE})
+          .SetParameters(std::move(params_vec))
+          .SetParameterTypes(std::move(param_types))
+          .Build());
 }
 
-void QueryTraceMetricRawData::ToDB(common::ManagedPointer<task::TaskManager> task_manager) {
+void QueryTraceMetricRawData::ToDB(common::ManagedPointer<task::TaskManager> task_manager,
+                                   const transaction::TransactionPolicy &txn_policy) {
   // On regular ToDB calls from metrics manager, we don't want to flush the time data or parameters.
   // Only on a forecast interval should we be doing that. Rather, ToDB will write out time-series data
   // only if a segment has elapsed.
   uint64_t timestamp = metrics::MetricsUtil::Now();
-  WriteToDB(task_manager, false, timestamp, nullptr, nullptr);
+  WriteToDB(task_manager, txn_policy, false, timestamp, nullptr, nullptr);
 }
 
 void QueryTraceMetricRawData::WriteToDB(
-    common::ManagedPointer<task::TaskManager> task_manager, bool write_parameters, uint64_t write_timestamp,
+    common::ManagedPointer<task::TaskManager> task_manager, const transaction::TransactionPolicy &txn_policy,
+    bool write_parameters, uint64_t write_timestamp,
     std::unordered_map<execution::query_id_t, QueryTraceMetadata::QueryMetadata> *out_metadata,
     std::unordered_map<execution::query_id_t, std::vector<std::string>> *out_params) {
   NOISEPAGE_ASSERT(task_manager != nullptr, "Task Manager not initialized");
