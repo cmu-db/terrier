@@ -28,7 +28,6 @@ class ModelServerTest : public TerrierTest {
   static std::unique_ptr<DBMain> BuildDBMain() {
     const char *env = ::getenv(BUILD_ABS_PATH);
     std::string project_build_path = (env != nullptr ? env : ".");
-    auto model_server_path = project_build_path + "/../script/self_driving/model_server.py";
 
     auto db_main = noisepage::DBMain::Builder()
                        .SetUseSettingsManager(false)
@@ -40,7 +39,6 @@ class ModelServerTest : public TerrierTest {
                        .SetUseExecution(true)
                        .SetUseStatsStorage(true)
                        .SetUseTrafficCop(true)
-                       .SetModelServerPath(model_server_path)
                        .SetModelServerEnablePythonCoverage(true)
                        .Build();
 
@@ -88,12 +86,12 @@ TEST_F(ModelServerTest, OUAndInterferenceModelTest) {
 
   // Perform a training of the opunit models with {lr, rf} as training methods.
   std::vector<std::string> methods{"lr", "rf"};
-  std::string ou_model_save_path = "ou_model_map.pickle";
+  std::string ou_model_save_path = "model_ou.pickle";
 
   ModelServerFuture<std::string> future;
   const char *env = ::getenv(BUILD_ABS_PATH);
   std::string project_build_path = std::string(env != nullptr ? env : ".");
-  std::string model_path = project_build_path + "/bin";
+  std::string model_path = project_build_path + "/bin/training_data_ou";
   ms_manager->TrainModel(ModelType::Type::OperatingUnit, methods, &model_path, ou_model_save_path, nullptr,
                          common::ManagedPointer<ModelServerFuture<std::string>>(&future));
   auto res = future.DangerousWait();
@@ -146,9 +144,9 @@ TEST_F(ModelServerTest, OUAndInterferenceModelTest) {
   std::vector<std::string> interference_methods{"rf"};
   // input_path and sample_rate are specified during the data generation phase, which is before the invocation of
   // this test (see Jenkinsfile configuration)
-  std::string input_path = project_build_path + "/concurrent_runner_input";
+  std::string input_path = project_build_path + "/bin/training_data_interference";
   uint64_t sample_rate = 2;
-  std::string interference_model_save_path = "interference_direct_model.pickle";
+  std::string interference_model_save_path = "model_interference.pickle";
 
   ms_manager->TrainInterferenceModel(interference_methods, input_path, interference_model_save_path, ou_model_save_path,
                                      sample_rate, common::ManagedPointer<ModelServerFuture<std::string>>(&future));
@@ -193,8 +191,8 @@ TEST_F(ModelServerTest, ForecastModelTest) {
   uint64_t horizon_length = 30;
   const char *env = ::getenv(BUILD_ABS_PATH);
   std::string project_build_path = (env != nullptr ? env : ".");
-  std::string save_path = "model.pickle";
-  std::string input_path = project_build_path + "/query_trace.csv";
+  std::string save_path = "model_forecast.pickle";
+  std::string input_path = project_build_path + "/bin/query_trace.csv";
 
   ModelServerFuture<std::string> future;
   ms_manager->TrainForecastModel(methods, input_path, save_path, interval, seq_length, horizon_length,

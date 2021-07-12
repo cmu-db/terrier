@@ -89,9 +89,9 @@ void stageTest(Boolean runPipelineMetrics, Map args = [:]) {
     sh 'cd build && timeout 1h ninja check-tpl'
 
     if (args.cmake.toUpperCase().contains("NOISEPAGE_USE_JUMBOTESTS=ON")) {
-        sh 'cd build && export BUILD_ABS_PATH=`pwd` && timeout 1h ninja jumbotests'
+        sh 'cd build && export BUILD_ABS_PATH=`pwd` && PYTHONPATH=.. timeout 1h ninja jumbotests'
     } else {
-        sh 'cd build && export BUILD_ABS_PATH=`pwd` && timeout 1h ninja unittest'
+        sh 'cd build && export BUILD_ABS_PATH=`pwd` && PYTHONPATH=.. timeout 1h ninja unittest'
     }
 
     if (args.cmake.toUpperCase().contains("NOISEPAGE_GENERATE_COVERAGE=ON")) {
@@ -227,49 +227,69 @@ void stageModeling() {
     ])
     buildNoisePageTarget("execution_runners")
 
-    // The forecaster_standalone script runs TPC-C with query trace enabled.
-    // The forecaster_standalone script uses SET to enable query trace.
-    // --pattern_iter determines how many times to run a sequence of TPC-C phases.
-    // --pattern_iter is set to 3 (magic number) to generate enough data for training and testing.
-    sh script :'''
-    cd build
-    PYTHONPATH=.. python3 -m script.self_driving.forecasting.forecaster_standalone --generate_data --pattern_iter=3
-    ''', label: 'Generate training data for forecasting model.'
-
-    // This script runs TPC-C with pipeline metrics enabled, saving to build/concurrent_runner_input/pipeline.csv.
-    sh script :'''
-    cd build
-    PYTHONPATH=.. python3 -m script.self_driving.forecasting.forecaster_standalone --generate_data --record_pipeline_metrics_with_counters --pattern_iter=1
-    mkdir concurrent_runner_input
-    mv pipeline.csv concurrent_runner_input
-    ''', label: 'Interference model training data generation'
-
-    // The parameters to the execution_runners target are arbitrarily picked to complete tests within 10 minutes while
-    // still exercising all OUs and generating a reasonable amount of training data.
-    //
-    // Specifically, the parameters chosen are:
-    // - execution_runner_rows_limit=100, which sets the max number of rows/tuples processed to be 100 (small table).
-    // - rerun=0, which skips rerun since we are not testing benchmark performance here.
-    // - warm_num=1, which also tests the warm up phase for the execution_runners.
     sh script :'''
     cd build/bin
-    ../benchmark/execution_runners --execution_runner_rows_limit=100 --rerun=0 --warm_num=1
-    ''', label: 'OU model training data generation'
+    ../../script/self_driving/train_models.sh --train-ou --train-interference --train-forecast
+    ''', label: 'Train OU, interference, and forecast models.'
 
-    // Recompile the noisepage DBMS in Debug mode with code coverage.
+    // Recompile the noisepage DBMS in Debug mode with code coverage. Note that previously set vars must be unset.
     buildNoisePage([buildCommand:'ninja noisepage', cmake:
-        '-DCMAKE_BUILD_TYPE=Debug -DNOISEPAGE_GENERATE_COVERAGE=ON'
+        '-DCMAKE_BUILD_TYPE=Debug -DNOISEPAGE_GENERATE_COVERAGE=ON -DNOISEPAGE_UNITY_BUILD=OFF -DNOISEPAGE_USE_JEMALLOC=OFF'
     ])
 
     // Run the self_driving_e2e_test.
     sh script: '''
     cd build
     export BUILD_ABS_PATH=`pwd`
-    timeout 10m ninja self_driving_e2e_test
+    PYTHONPATH=.. timeout 10m ninja self_driving_e2e_test
     ''', label: 'Running self-driving end-to-end test'
 
     // We need `coverage combine` because coverage files are generated separately for each test and then moved into the
     // the build root by `run-test.sh`
+    sh script :'''
+    cd build
+    coverage combine
+    ''', label: 'Combine Python code coverage.'
+
+    uploadCoverage()
+
+    stagePost()
+}
+
+void stagePilot() {
+    stagePre()
+    installPackages()
+
+    // Build the noisepage DBMS and the execution_runners binary in release mode for efficient data generation.
+    buildNoisePage([buildCommand:'ninja noisepage', cmake:
+        '-DCMAKE_BUILD_TYPE=Release -DNOISEPAGE_UNITY_BUILD=ON -DNOISEPAGE_USE_JEMALLOC=ON'
+    ])
+    buildNoisePageTarget("execution_runners")
+
+    sh script :'''
+    cd build/bin
+    ../../script/self_driving/train_models.sh --train-ou --train-interference
+    ''', label: 'Train OU and interference models.'
+
+    sh script :'''
+    cd build
+    export BUILD_ABS_PATH=`pwd`
+    cd bin
+    PYTHONPATH=../.. timeout 60m python3 -m script.testing.self_driving.pilot_generate_data
+    ''', label: 'Generate data for pilot.'
+
+    // Recompile the noisepage DBMS in Debug mode with code coverage. Note that previously set vars must be unset.
+    buildNoisePage([buildCommand:'ninja noisepage', cmake:
+        '-DCMAKE_BUILD_TYPE=Debug -DNOISEPAGE_GENERATE_COVERAGE=ON -DNOISEPAGE_UNITY_BUILD=OFF -DNOISEPAGE_USE_JEMALLOC=OFF'
+    ])
+
+    sh script :'''
+    cd build
+    export BUILD_ABS_PATH=`pwd`
+    cd bin
+    PYTHONPATH=../.. timeout 60m python3 -m script.testing.self_driving.pilot_run
+    ''', label: 'Run pilot.'
+
     sh script :'''
     cd build
     coverage combine
@@ -404,6 +424,17 @@ void buildNoisePageTarget(String target) {
     cd build
     ninja $target
     """
+}
+
+/** Generate training data for the forecast model. */
+void selfDrivingGenerateTrainingDataForecast() {
+    // The forecaster_standalone script runs TPC-C with query trace enabled to generate training data for forecasting.
+    // --pattern_iter determines how many times to run a sequence of TPC-C phases.
+    // --pattern_iter is set to 3 (magic number) to generate enough data for training and testing.
+    sh script :'''
+    cd build
+    PYTHONPATH=.. python3 -m script.self_driving.forecasting.forecaster_standalone --generate_data --pattern_iter=3
+    ''', label: 'Generate training data for forecasting model.'
 }
 
 /** Collect and process coverage information from the build directory; upload coverage to Codecov. */

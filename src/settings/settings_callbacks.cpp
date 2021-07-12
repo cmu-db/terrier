@@ -231,6 +231,9 @@ void Callbacks::PilotEnablePlanning(void *const old_value, void *const new_value
 void Callbacks::TrainForecastModel(void *old_value, void *new_value, DBMain *db_main,
                                    common::ManagedPointer<common::ActionContext> action_context) {
   action_context->SetState(common::ActionState::IN_PROGRESS);
+  if (db_main->GetPilot() == DISABLED) {
+    throw SETTINGS_EXCEPTION("Pilot is disabled.", common::ErrorCode::ERRCODE_INTERNAL_ERROR);
+  }
   db_main->GetPilot()->PerformForecasterTrain();
   action_context->SetState(common::ActionState::SUCCESS);
 }
@@ -241,6 +244,13 @@ void Callbacks::TrainInterferenceModel(void *old_value, void *new_value, DBMain 
 
   auto settings = db_main->GetSettingsManager();
   auto ms_manager = db_main->GetModelServerManager();
+
+  if (settings == DISABLED) {
+    throw SETTINGS_EXCEPTION("Settings manager is disabled.", common::ErrorCode::ERRCODE_INTERNAL_ERROR);
+  }
+  if (ms_manager == DISABLED) {
+    throw SETTINGS_EXCEPTION("Model server manager is disabled.", common::ErrorCode::ERRCODE_INTERNAL_ERROR);
+  }
 
   auto ou_model_save = std::string(settings->GetValue(settings::Param::ou_model_save_path).Peek<std::string_view>());
   auto interference_model_save =
@@ -284,6 +294,13 @@ void Callbacks::TrainOUModel(void *old_value, void *new_value, DBMain *db_main,
 
   auto settings = db_main->GetSettingsManager();
   auto ms_manager = db_main->GetModelServerManager();
+
+  if (settings == DISABLED) {
+    throw SETTINGS_EXCEPTION("Settings manager is disabled.", common::ErrorCode::ERRCODE_INTERNAL_ERROR);
+  }
+  if (ms_manager == DISABLED) {
+    throw SETTINGS_EXCEPTION("Model server manager is disabled.", common::ErrorCode::ERRCODE_INTERNAL_ERROR);
+  }
 
   auto ou_model_save = std::string(settings->GetValue(settings::Param::ou_model_save_path).Peek<std::string_view>());
   auto input_path = std::string(settings->GetValue(settings::Param::ou_model_input_path).Peek<std::string_view>());

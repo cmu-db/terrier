@@ -297,6 +297,16 @@ SETTING_bool(
     noisepage::settings::Callbacks::PilotEnablePlanning
 )
 
+SETTING_int(
+    pilot_workload_forecast_init_mode,
+    "Control how the workload forecast should be initialized, see WorkloadForecastInitMode.",
+    2 /* DISK_ONLY. */,
+    0,
+    2,
+    true,
+    noisepage::settings::Callbacks::NoOp
+)
+
 SETTING_bool(
     enable_seq_tuning,
     "Use sequence tuning instead of monte carlo tree search for pilot planning (default: false).",
@@ -508,19 +518,12 @@ SETTING_bool(
     noisepage::settings::Callbacks::NoOp
 )
 
-// Relative path assuming binary locate at PROJECT_ROOT/build/bin/, and model_server.py at PROJECT_ROOT/script/model
-SETTING_string(
-    model_server_path,
-    "The python model server script to invoke (default: ../../script/model/model_server.py)",
-    "../../script/model/model_server.py",
-    false,
-    noisepage::settings::Callbacks::NoOp
-)
+// TODO(WAN): The save paths cannot be changed at runtime because of implementation issues with the planning context
+//            and pilot stuff. This can be engineered out later.
 
-// Save path of the model relative to the build path (model saved at ${BUILD_ABS_PATH} + SAVE_PATH)
 SETTING_string(
     ou_model_save_path,
-    "Save path of the OU model relative to the build path (default: ou_model_map.pickle)",
+    "Save path of the OU model relative to the NoisePage binary workdir (default: ou_model_map.pickle)",
     "ou_model_map.pickle",
     false,
     noisepage::settings::Callbacks::NoOp
@@ -528,7 +531,7 @@ SETTING_string(
 
 SETTING_string(
     interference_model_save_path,
-    "Save path of the forecast model relative to the build path (default: interference_direct_model.pickle)",
+    "Save path of the forecast model relative to NoisePage binary workdir (default: interference_direct_model.pickle)",
     "interference_direct_model.pickle",
     false,
     noisepage::settings::Callbacks::NoOp
