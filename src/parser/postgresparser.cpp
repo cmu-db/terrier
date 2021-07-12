@@ -61,7 +61,7 @@ std::unique_ptr<parser::ParseResult> PostgresParser::BuildParseTree(const std::s
   // Transform the Postgres parse tree to a Terrier representation.
   auto parse_result = std::make_unique<ParseResult>();
   try {
-    ListTransform(parse_result.get(), result.tree);
+    ListTransform(parse_result.get(), result.tree, query_string);
   } catch (const Exception &e) {
     pg_query_parse_finish(ctx);
     pg_query_free_parse_result(result);
@@ -74,16 +74,17 @@ std::unique_ptr<parser::ParseResult> PostgresParser::BuildParseTree(const std::s
   return parse_result;
 }
 
-void PostgresParser::ListTransform(ParseResult *parse_result, List *root) {
+void PostgresParser::ListTransform(ParseResult *parse_result, List *root, const std::string &query_string) {
   if (root != nullptr) {
     for (auto cell = root->head; cell != nullptr; cell = cell->next) {
       auto node = static_cast<Node *>(cell->data.ptr_value);
-      parse_result->AddStatement(NodeTransform(parse_result, node));
+      parse_result->AddStatement(NodeTransform(parse_result, node, query_string));
     }
   }
 }
 
-std::unique_ptr<SQLStatement> PostgresParser::NodeTransform(ParseResult *parse_result, Node *node) {
+std::unique_ptr<SQLStatement> PostgresParser::NodeTransform(ParseResult *parse_result, Node *node,
+                                                            const std::string &query_string) {
   // TODO(WAN): Document what input is parsed to nullptr
   if (node == nullptr) {
     return nullptr;
@@ -104,7 +105,7 @@ std::unique_ptr<SQLStatement> PostgresParser::NodeTransform(ParseResult *parse_r
       break;
     }
     case T_CreateFunctionStmt: {
-      result = CreateFunctionTransform(parse_result, reinterpret_cast<CreateFunctionStmt *>(node));
+      result = CreateFunctionTransform(parse_result, reinterpret_cast<CreateFunctionStmt *>(node), query_string);
       break;
     }
     case T_CreateSchemaStmt: {
@@ -128,7 +129,7 @@ std::unique_ptr<SQLStatement> PostgresParser::NodeTransform(ParseResult *parse_r
       break;
     }
     case T_ExplainStmt: {
-      result = ExplainTransform(parse_result, reinterpret_cast<ExplainStmt *>(node));
+      result = ExplainTransform(parse_result, reinterpret_cast<ExplainStmt *>(node), query_string);
       break;
     }
     case T_IndexStmt: {
@@ -140,7 +141,7 @@ std::unique_ptr<SQLStatement> PostgresParser::NodeTransform(ParseResult *parse_r
       break;
     }
     case T_PrepareStmt: {
-      result = PrepareTransform(parse_result, reinterpret_cast<PrepareStmt *>(node));
+      result = PrepareTransform(parse_result, reinterpret_cast<PrepareStmt *>(node), query_string);
       break;
     }
     case T_SelectStmt: {
@@ -1283,21 +1284,23 @@ std::unique_ptr<parser::SQLStatement> PostgresParser::CreateDatabaseTransform(Pa
 
 // Postgres.CreateFunctionStmt -> noisepage.CreateFunctionStatement
 std::unique_ptr<SQLStatement> PostgresParser::CreateFunctionTransform(ParseResult *parse_result,
-                                                                      CreateFunctionStmt *root) {
+                                                                      CreateFunctionStmt *root,
+                                                                      const std::string &query_string) {
   bool replace = root->replace_;
-  std::vector<std::unique_ptr<FuncParameter>> func_parameters;
-
-  for (auto cell = root->parameters_->head; cell != nullptr; cell = cell->next) {
-    auto node = reinterpret_cast<Node *>(cell->data.ptr_value);
-    switch (node->type) {
-      case T_FunctionParameter: {
-        func_parameters.emplace_back(
-            FunctionParameterTransform(parse_result, reinterpret_cast<FunctionParameter *>(node)));
-        break;
-      }
-      default: {
-        // TODO(WAN): previous code just ignored it, is this right?
-        break;
+  std::vector<std::unique_ptr<FuncParameter>> func_parameters{};
+  if (root->parameters_ != nullptr) {
+    for (auto cell = root->parameters_->head; cell != nullptr; cell = cell->next) {
+      auto node = reinterpret_cast<Node *>(cell->data.ptr_value);
+      switch (node->type) {
+        case T_FunctionParameter: {
+          func_parameters.emplace_back(
+              FunctionParameterTransform(parse_result, reinterpret_cast<FunctionParameter *>(node)));
+          break;
+        }
+        default: {
+          // TODO(WAN): previous code just ignored it, is this right?
+          break;
+        }
       }
     }
   }
@@ -1307,7 +1310,9 @@ std::unique_ptr<SQLStatement> PostgresParser::CreateFunctionTransform(ParseResul
   // TODO(WAN): assumption from old code, can only pass one function name for now
   std::string func_name = (reinterpret_cast<value *>(root->funcname_->tail->data.ptr_value)->val_.str_);
 
-  std::vector<std::string> func_body;
+  std::vector<std::string> func_body{};
+  func_body.push_back(query_string);
+
   AsType as_type = AsType::INVALID;
   PLType pl_type = PLType::INVALID;
 
@@ -1321,7 +1326,7 @@ std::unique_ptr<SQLStatement> PostgresParser::CreateFunctionTransform(ParseResul
         func_body.push_back(query_string);
       }
 
-      if (func_body.size() > 1) {
+      if (func_body.size() > 2) {
         as_type = AsType::EXECUTABLE;
       } else {
         as_type = AsType::QUERY_STRING;
@@ -1338,11 +1343,9 @@ std::unique_ptr<SQLStatement> PostgresParser::CreateFunctionTransform(ParseResul
     }
   }
 
-  auto result =
-      std::make_unique<CreateFunctionStatement>(replace, std::move(func_name), std::move(func_body),
-                                                std::move(return_type), std::move(func_parameters), pl_type, as_type);
-
-  return result;
+  return std::make_unique<CreateFunctionStatement>(replace, std::move(func_name), std::move(func_body),
+                                                   std::move(return_type), std::move(func_parameters), pl_type,
+                                                   as_type);
 }
 
 // Postgres.IndexStmt -> noisepage.CreateStatement
@@ -1703,6 +1706,8 @@ std::unique_ptr<ReturnType> PostgresParser::ReturnTypeTransform(ParseResult *par
     data_type = BaseFunctionParameter::DataType::TINYINT;
   } else if (strcmp(name, "bool") == 0) {
     data_type = BaseFunctionParameter::DataType::BOOL;
+  } else if (strcmp(name, "date") == 0) {
+    data_type = BaseFunctionParameter::DataType::DATE;
   } else {
     PARSER_LOG_AND_THROW("ReturnTypeTransform", "ReturnType", name);
   }
@@ -1907,10 +1912,11 @@ std::vector<common::ManagedPointer<AbstractExpression>> PostgresParser::ParamLis
   return result;
 }
 
-std::unique_ptr<ExplainStatement> PostgresParser::ExplainTransform(ParseResult *parse_result, ExplainStmt *root) {
+std::unique_ptr<ExplainStatement> PostgresParser::ExplainTransform(ParseResult *parse_result, ExplainStmt *root,
+                                                                   const std::string &query_string) {
   static constexpr char k_format_tok[] = "format";
   std::unique_ptr<ExplainStatement> result;
-  auto query = NodeTransform(parse_result, root->query_);
+  auto query = NodeTransform(parse_result, root->query_, query_string);
   result = std::make_unique<ExplainStatement>(std::move(query));
 
   if (root->options_ != nullptr) {
@@ -2065,9 +2071,10 @@ std::vector<std::unique_ptr<UpdateClause>> PostgresParser::UpdateTargetTransform
 }
 
 // Postgres.PrepareStmt -> noisepage.PrepareStatement
-std::unique_ptr<PrepareStatement> PostgresParser::PrepareTransform(ParseResult *parse_result, PrepareStmt *root) {
+std::unique_ptr<PrepareStatement> PostgresParser::PrepareTransform(ParseResult *parse_result, PrepareStmt *root,
+                                                                   const std::string &query_string) {
   auto name = root->name_;
-  auto query = NodeTransform(parse_result, root->query_);
+  auto query = NodeTransform(parse_result, root->query_, query_string);
 
   // TODO(WAN): This should probably be populated?
   std::vector<common::ManagedPointer<ParameterValueExpression>> placeholders;

@@ -55,12 +55,17 @@ class CompilationContext {
    * @param mode The compilation mode.
    * @param override_qid Optional indicating how to override the plan's query id
    * @param plan_meta_data Query plan meta data (stores cardinality information)
+   * @param query_text The SQL query string (temporary)
+   * @param output_callback The lambda utilized as the output callback for the query
+   * @param context The AST context for the query
    */
   static std::unique_ptr<ExecutableQuery> Compile(
       const planner::AbstractPlanNode &plan, const exec::ExecutionSettings &exec_settings,
       catalog::CatalogAccessor *accessor, CompilationMode mode = CompilationMode::Interleaved,
       std::optional<execution::query_id_t> override_qid = std::nullopt,
-      common::ManagedPointer<planner::PlanMetaData> plan_meta_data = nullptr);
+      common::ManagedPointer<planner::PlanMetaData> plan_meta_data = nullptr,
+      common::ManagedPointer<const std::string> query_text = nullptr, ast::LambdaExpr *output_callback = nullptr,
+      common::ManagedPointer<ast::Context> context = nullptr);
 
   /**
    * Register a pipeline in this context.
@@ -124,6 +129,11 @@ class CompilationContext {
    */
   CompilationMode GetCompilationMode() const { return mode_; }
 
+  /**
+   * @return The output callback.
+   */
+  ast::Expr *GetOutputCallback() const { return output_callback_; }
+
   /** @return True if we should collect counters in TPL, used for Lin's models. */
   bool IsCountersEnabled() const { return counters_enabled_; }
 
@@ -133,10 +143,21 @@ class CompilationContext {
   /** @return Query Id associated with the query */
   query_id_t GetQueryId() const { return query_id_; }
 
+  /**
+   * @brief Set the current op.
+   */
+  void SetCurrentOp(OperatorTranslator *current_op) { current_op_ = current_op; }
+
+  /**
+   * @return The current op.
+   */
+  OperatorTranslator *GetCurrentOp() const { return current_op_; }
+
  private:
   // Private to force use of static Compile() function.
   explicit CompilationContext(ExecutableQuery *query, query_id_t query_id_, catalog::CatalogAccessor *accessor,
-                              CompilationMode mode, const exec::ExecutionSettings &exec_settings);
+                              CompilationMode mode, const exec::ExecutionSettings &exec_settings,
+                              ast::LambdaExpr *output_callback = nullptr);
 
   // Given a plan node, compile it into a compiled query object.
   void GeneratePlan(const planner::AbstractPlanNode &plan,
@@ -175,6 +196,9 @@ class CompilationContext {
   StateDescriptor query_state_;
   StateDescriptor::Entry exec_ctx_;
 
+  // The output callback.
+  ast::LambdaExpr *output_callback_;
+
   // The operator and expression translators.
   std::unordered_map<const planner::AbstractPlanNode *, std::unique_ptr<OperatorTranslator>> ops_;
   std::unordered_map<const parser::AbstractExpression *, std::unique_ptr<ExpressionTranslator>> expressions_;
@@ -187,6 +211,9 @@ class CompilationContext {
 
   // Whether pipeline metrics are enabled.
   bool pipeline_metrics_enabled_;
+
+  // The current operator.
+  OperatorTranslator *current_op_;
 };
 
 }  // namespace noisepage::execution::compiler

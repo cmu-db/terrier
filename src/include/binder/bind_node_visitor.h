@@ -2,10 +2,15 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "binder/sql_node_visitor.h"
 #include "catalog/catalog_defs.h"
+#include "execution/ast/udf/udf_ast_context.h"
+#include "parser/postgresparser.h"
+#include "parser/select_statement.h"
 #include "type/type_id.h"
 
 namespace noisepage {
@@ -46,6 +51,17 @@ class BindNodeVisitor final : public SqlNodeVisitor {
 
   /** Destructor. Must be defined due to forward declaration. */
   ~BindNodeVisitor() final;
+
+  /**
+   * Perform binding for a UDF.
+   * @param parse_result The result of parsing the UDF.
+   * @param udf_ast_context The AST context for the UDF.
+   * @return The map of UDF parameters:
+   *    Column Name -> (Parameter Name, Parameter Index)
+   */
+  std::unordered_map<std::string, std::pair<std::string, std::size_t>> BindAndGetUDFParams(
+      common::ManagedPointer<parser::ParseResult> parse_result,
+      common::ManagedPointer<execution::ast::udf::UDFASTContext> udf_ast_context);
 
   /**
    * Perform binding on the passed in tree. Bind the relation names to oids
@@ -100,6 +116,11 @@ class BindNodeVisitor final : public SqlNodeVisitor {
 
   /** Current context of the query or subquery */
   common::ManagedPointer<BinderContext> context_ = nullptr;
+
+  /** Context for UDF AST */
+  common::ManagedPointer<execution::ast::udf::UDFASTContext> udf_ast_context_{};
+  /** Parameters for UDF */
+  std::unordered_map<std::string, std::pair<std::string, size_t>> udf_params_;
 
   /** Catalog accessor */
   const common::ManagedPointer<catalog::CatalogAccessor> catalog_accessor_;

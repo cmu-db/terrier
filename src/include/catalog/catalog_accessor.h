@@ -331,7 +331,7 @@ class EXPORT CatalogAccessor {
   proc_oid_t CreateProcedure(const std::string &procname, language_oid_t language_oid, namespace_oid_t procns,
                              const std::vector<std::string> &args, const std::vector<type_oid_t> &arg_types,
                              const std::vector<type_oid_t> &all_arg_types,
-                             const std::vector<postgres::PgProc::ArgModes> &arg_modes, type_oid_t rettype,
+                             const std::vector<postgres::PgProc::ArgMode> &arg_modes, type_oid_t rettype,
                              const std::string &src, bool is_aggregate);
 
   /**
@@ -350,6 +350,13 @@ class EXPORT CatalogAccessor {
    * @return the oid of the found proc if found else INVALID_PROC_OID
    */
   proc_oid_t GetProcOid(const std::string &procname, const std::vector<type_oid_t> &all_arg_types);
+
+  /**
+   * TODO(Kyle): Document.
+   */
+  common::ManagedPointer<execution::functions::FunctionContext> GetProcCtxPtr(proc_oid_t proc_oid);
+
+  // TODO(Kyle): Make these functions consistent
 
   /**
    * Sets the proc context pointer column of proc_oid to func_context

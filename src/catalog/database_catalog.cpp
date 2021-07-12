@@ -451,14 +451,13 @@ proc_oid_t DatabaseCatalog::CreateProcedure(common::ManagedPointer<transaction::
                                             namespace_oid_t procns, const std::vector<std::string> &args,
                                             const std::vector<type_oid_t> &arg_types,
                                             const std::vector<type_oid_t> &all_arg_types,
-                                            const std::vector<postgres::PgProc::ArgModes> &arg_modes,
-                                            type_oid_t rettype, const std::string &src, bool is_aggregate) {
+                                            const std::vector<postgres::PgProc::ArgMode> &arg_modes, type_oid_t rettype,
+                                            const std::string &src, bool is_aggregate) {
   if (!TryLock(txn)) return INVALID_PROC_OID;
   proc_oid_t oid = proc_oid_t{next_oid_++};
-  return pg_proc_.CreateProcedure(txn, oid, procname, language_oid, procns, args, arg_types, all_arg_types, arg_modes,
-                                  rettype, src, is_aggregate)
-             ? oid
-             : INVALID_PROC_OID;
+  const auto result = pg_proc_.CreateProcedure(txn, oid, procname, language_oid, procns, args, arg_types, all_arg_types,
+                                               arg_modes, rettype, src, is_aggregate);
+  return result ? oid : INVALID_PROC_OID;
 }
 
 bool DatabaseCatalog::DropProcedure(const common::ManagedPointer<transaction::TransactionContext> txn,
@@ -471,6 +470,11 @@ proc_oid_t DatabaseCatalog::GetProcOid(common::ManagedPointer<transaction::Trans
                                        namespace_oid_t procns, const std::string &procname,
                                        const std::vector<type_oid_t> &arg_types) {
   return pg_proc_.GetProcOid(txn, common::ManagedPointer(this), procns, procname, arg_types);
+}
+
+common::ManagedPointer<execution::functions::FunctionContext> DatabaseCatalog::GetProcCtxPtr(
+    common::ManagedPointer<transaction::TransactionContext> txn, proc_oid_t proc_oid) {
+  return pg_proc_.GetProcCtxPtr(txn, proc_oid);
 }
 
 template <typename ClassOid, typename Ptr>

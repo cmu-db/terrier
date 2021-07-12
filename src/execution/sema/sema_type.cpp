@@ -90,4 +90,15 @@ void Sema::VisitMapTypeRepr(ast::MapTypeRepr *node) {
   node->SetType(ast::MapType::Get(key_type, value_type));
 }
 
+void Sema::VisitLambdaTypeRepr(ast::LambdaTypeRepr *node) {
+  auto *fn_type = Resolve(node->FunctionType())->SafeAs<ast::FunctionType>();
+  if (fn_type == nullptr) {
+    return;
+  }
+
+  fn_type->GetParams().emplace_back(GetContext()->GetIdentifier("captures"),
+                                    GetBuiltinType(ast::BuiltinType::Kind::Int32)->PointerTo());
+  node->SetType(ast::LambdaType::Get(fn_type));
+}
+
 }  // namespace noisepage::execution::sema

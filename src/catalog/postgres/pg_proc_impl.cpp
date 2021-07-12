@@ -77,7 +77,7 @@ bool PgProcImpl::CreateProcedure(const common::ManagedPointer<transaction::Trans
                                  const proc_oid_t oid, const std::string &procname, const language_oid_t language_oid,
                                  const namespace_oid_t procns, const std::vector<std::string> &args,
                                  const std::vector<type_oid_t> &arg_types, const std::vector<type_oid_t> &all_arg_types,
-                                 const std::vector<PgProc::ArgModes> &arg_modes, const type_oid_t rettype,
+                                 const std::vector<PgProc::ArgMode> &arg_modes, const type_oid_t rettype,
                                  const std::string &src, const bool is_aggregate) {
   NOISEPAGE_ASSERT(args.size() < UINT16_MAX, "Number of arguments must fit in a SMALLINT");
 
@@ -89,11 +89,13 @@ bool PgProcImpl::CreateProcedure(const common::ManagedPointer<transaction::Trans
 
   // Prepare the PR for insertion.
   {
-    std::vector<std::string> arg_name_vec;
+    std::vector<std::string> arg_name_vec{};
     arg_name_vec.reserve(args.size() * sizeof(storage::VarlenEntry));
-    for (auto &arg : args) {
-      arg_name_vec.push_back(arg);
-    }
+    std::copy(args.cbegin(), args.cend(), std::back_inserter(arg_name_vec));
+    // arg_name_vec.reserve(args.size() * );
+    // for (auto &arg : args) {
+    //   arg_name_vec.push_back(arg);
+    // }
 
     const auto arg_names_varlen = storage::StorageUtil::CreateVarlen(args);
     const auto arg_types_varlen = storage::StorageUtil::CreateVarlen(arg_types);
@@ -107,6 +109,7 @@ bool PgProcImpl::CreateProcedure(const common::ManagedPointer<transaction::Trans
     PgProc::PROLANG.Set(delta, pm, language_oid);  // Language for procedure.
     PgProc::PROCOST.Set(delta, pm, 0);             // Estimated cost per row returned.
     PgProc::PROROWS.Set(delta, pm, 0);             // Estimated number of result rows.
+
     // The Postgres documentation says that provariadic should be 0 if no variadics are present.
     // Otherwise, it is the data type of the variadic array parameter's elements.
     // TODO(WAN): Hang on, how are we using CreateProcedure for variadics then?
@@ -120,6 +123,7 @@ bool PgProcImpl::CreateProcedure(const common::ManagedPointer<transaction::Trans
     PgProc::PRONARGDEFAULTS.Set(delta, pm, 0);                                           // Assume no default args.
     PgProc::PRORETTYPE.Set(delta, pm, rettype);                                          // Return type.
     PgProc::PROARGTYPES.Set(delta, pm, arg_types_varlen);                                // Arg types.
+
     // TODO(WAN): proallargtypes and proargmodes in Postgres should be NULL most of the time. See #1359.
     PgProc::PROALLARGTYPES.Set(delta, pm, all_arg_types_varlen);
     PgProc::PROARGMODES.Set(delta, pm, arg_modes_varlen);
@@ -144,7 +148,6 @@ bool PgProcImpl::CreateProcedure(const common::ManagedPointer<transaction::Trans
     name_pr->Set<storage::VarlenEntry, false>(name_map[indexkeycol_oid_t(2)], name_varlen, false);
 
     if (auto result = procs_name_index_->Insert(txn, *name_pr, tuple_slot); !result) {
-      delete[] buffer;
       return false;
     }
   }
@@ -157,7 +160,6 @@ bool PgProcImpl::CreateProcedure(const common::ManagedPointer<transaction::Trans
     NOISEPAGE_ASSERT(result, "Oid insertion should be unique");
   }
 
-  delete[] buffer;
   return true;
 }
 
@@ -444,16 +446,16 @@ void PgProcImpl::BootstrapProcs(const common::ManagedPointer<transaction::Transa
   create_fn("date_part", {"date, date_part_type"}, {DATE, INT}, {DATE, INT}, INT, false);
   create_fn("version", {}, {}, {}, STR, false);
 
-  CreateProcedure(
-      txn, proc_oid_t{dbc->next_oid_++}, "nprunnersemitint", PgLanguage::INTERNAL_LANGUAGE_OID,
-      PgNamespace::NAMESPACE_DEFAULT_NAMESPACE_OID, {"num_tuples", "num_cols", "num_int_cols", "num_real_cols"},
-      {INT, INT, INT, INT}, {INT, INT, INT, INT},
-      {PgProc::ArgModes::IN, PgProc::ArgModes::IN, PgProc::ArgModes::IN, PgProc::ArgModes::IN}, INT, "", false);
+  CreateProcedure(txn, proc_oid_t{dbc->next_oid_++}, "nprunnersemitint", PgLanguage::INTERNAL_LANGUAGE_OID,
+                  PgNamespace::NAMESPACE_DEFAULT_NAMESPACE_OID,
+                  {"num_tuples", "num_cols", "num_int_cols", "num_real_cols"}, {INT, INT, INT, INT},
+                  {INT, INT, INT, INT},
+                  {PgProc::ArgMode::IN, PgProc::ArgMode::IN, PgProc::ArgMode::IN, PgProc::ArgMode::IN}, INT, "", false);
   CreateProcedure(
       txn, proc_oid_t{dbc->next_oid_++}, "nprunnersemitreal", PgLanguage::INTERNAL_LANGUAGE_OID,
       PgNamespace::NAMESPACE_DEFAULT_NAMESPACE_OID, {"num_tuples", "num_cols", "num_int_cols", "num_real_cols"},
       {INT, INT, INT, INT}, {INT, INT, INT, INT},
-      {PgProc::ArgModes::IN, PgProc::ArgModes::IN, PgProc::ArgModes::IN, PgProc::ArgModes::IN}, REAL, "", false);
+      {PgProc::ArgMode::IN, PgProc::ArgMode::IN, PgProc::ArgMode::IN, PgProc::ArgMode::IN}, REAL, "", false);
   CreateProcedure(txn, proc_oid_t{dbc->next_oid_++}, "nprunnersdummyint", PgLanguage::INTERNAL_LANGUAGE_OID,
                   PgNamespace::NAMESPACE_DEFAULT_NAMESPACE_OID, {}, {}, {}, {}, INT, "", false);
   CreateProcedure(txn, proc_oid_t{dbc->next_oid_++}, "nprunnersdummyreal", PgLanguage::INTERNAL_LANGUAGE_OID,

@@ -64,6 +64,19 @@ void BindNodeVisitor::BindNameToNode(
 
 BindNodeVisitor::~BindNodeVisitor() = default;
 
+std::unordered_map<std::string, std::pair<std::string, std::size_t>> BindNodeVisitor::BindAndGetUDFParams(
+    common::ManagedPointer<parser::ParseResult> parse_result,
+    common::ManagedPointer<execution::ast::udf::UDFASTContext> udf_ast_context) {
+  NOISEPAGE_ASSERT(parse_result != nullptr, "We shouldn't be trying to bind something without a ParseResult.");
+  sherpa_ = std::make_unique<BinderSherpa>(parse_result, nullptr, nullptr);
+  NOISEPAGE_ASSERT(sherpa_->GetParseResult()->GetStatements().size() == 1, "Binder can only bind one at a time.");
+  udf_ast_context_ = udf_ast_context;
+  sherpa_->GetParseResult()->GetStatement(0)->Accept(
+      common::ManagedPointer(this).CastManagedPointerTo<SqlNodeVisitor>());
+  // TODO(Kyle): This is strange, why are we returning this member by value?
+  return udf_params_;
+}
+
 void BindNodeVisitor::Visit(common::ManagedPointer<parser::AnalyzeStatement> node) {
   BINDER_LOG_TRACE("Visiting AnalyzeStatement ...");
   SqlNodeVisitor::Visit(node);
@@ -667,14 +680,14 @@ void BindNodeVisitor::Visit(common::ManagedPointer<parser::ColumnValueExpression
   BINDER_LOG_TRACE("Visiting ColumnValueExpression ...");
   SqlNodeVisitor::Visit(expr);
 
-  // Before checking with the schema, cache the desired type that expr should have.
-  auto desired_type = sherpa_->GetDesiredType(expr.CastManagedPointerTo<parser::AbstractExpression>());
+  // Before checking with the schema, cache the desired type that expr should have
+  const auto cached_desired_type = sherpa_->GetDesiredType(expr.CastManagedPointerTo<parser::AbstractExpression>());
 
   // TODO(Ling): consider remove precondition check if the *_oid_ will never be initialized till binder
   //  That is, the object would not be initialized using ColumnValueExpression(database_oid, table_oid, column_oid)
   //  at this point
   if (expr->GetTableOid() == catalog::INVALID_TABLE_OID) {
-    std::tuple<catalog::db_oid_t, catalog::table_oid_t, catalog::Schema> tuple;
+    std::tuple<catalog::db_oid_t, catalog::table_oid_t, catalog::Schema> tuple{};
     std::string table_name = expr->GetTableName();
     std::string col_name = expr->GetColumnName();
     if (table_name.empty() && col_name.empty() && expr->GetColumnOid() != catalog::INVALID_COLUMN_OID) {
@@ -682,24 +695,46 @@ void BindNodeVisitor::Visit(common::ManagedPointer<parser::ColumnValueExpression
                                          std::to_string(expr->GetColumnOid().UnderlyingValue())),
                              common::ErrorCode::ERRCODE_UNDEFINED_COLUMN);
     }
-    // Convert all the names to lower cases
+    // Convert all the names to lower case
     std::transform(table_name.begin(), table_name.end(), table_name.begin(), ::tolower);
     std::transform(col_name.begin(), col_name.end(), col_name.begin(), ::tolower);
 
-    // Table name not specified in the expression. Loop through all the table in the binder context.
+    // Table name not specified in the expression; loop through all the tables in the binder context
+    type::TypeId the_type{};
     if (table_name.empty()) {
-      if (context_ == nullptr || !context_->SetColumnPosTuple(expr)) {
+      if (udf_ast_context_ != nullptr && udf_ast_context_->GetVariableType(expr->GetColumnName(), &the_type)) {
+        expr->SetReturnValueType(the_type);
+        std::size_t idx = 0;
+        if (udf_params_.count(expr->GetColumnName()) == 0) {
+          udf_params_[expr->GetColumnName()] = std::make_pair("", udf_params_.size());
+          idx = udf_params_.size() - 1;
+        }
+        expr->SetParamIdx(idx);
+      } else if (context_ == nullptr || !context_->SetColumnPosTuple(expr)) {
         throw BINDER_EXCEPTION(fmt::format("column \"{}\" does not exist", col_name),
                                common::ErrorCode::ERRCODE_UNDEFINED_COLUMN);
       }
     } else {
-      // Table name is present
+      // The table name is present
       if (context_ != nullptr && context_->GetRegularTableObj(table_name, expr, common::ManagedPointer(&tuple))) {
         if (!BinderContext::ColumnInSchema(std::get<2>(tuple), col_name)) {
           throw BINDER_EXCEPTION(fmt::format("column \"{}\" does not exist", col_name),
                                  common::ErrorCode::ERRCODE_UNDEFINED_COLUMN);
         }
         BinderContext::SetColumnPosTuple(col_name, tuple, expr);
+      } else if (udf_ast_context_ != nullptr && udf_ast_context_->GetVariableType(expr->GetTableName(), &the_type)) {
+        NOISEPAGE_ASSERT(the_type == type::TypeId::INVALID, "unknown type");
+        auto &fields = udf_ast_context_->GetRecordType(expr->GetTableName());
+        auto it = std::find_if(fields.begin(), fields.end(), [=](auto p) { return p.first == expr->GetColumnName(); });
+        std::size_t idx = 0;
+        if (it != fields.end()) {
+          if (udf_params_.count(expr->GetColumnName()) == 0) {
+            udf_params_[expr->GetColumnName()] = std::make_pair(expr->GetTableName(), udf_params_.size());
+            idx = udf_params_.size() - 1;
+          }
+          expr->SetReturnValueType(it->second);
+          expr->SetParamIdx(idx);
+        }
       } else if (context_ == nullptr || !context_->CheckNestedTableColumn(table_name, col_name, expr)) {
         throw BINDER_EXCEPTION(fmt::format("Invalid table reference {}", expr->GetTableName()),
                                common::ErrorCode::ERRCODE_UNDEFINED_TABLE);
@@ -709,7 +744,8 @@ void BindNodeVisitor::Visit(common::ManagedPointer<parser::ColumnValueExpression
 
   // The schema is authoritative on what the type of this ColumnValueExpression should be, UNLESS
   // some specific type was already requested.
-  desired_type = desired_type == type::TypeId::INVALID ? expr->GetReturnValueType() : desired_type;
+  const auto desired_type =
+      cached_desired_type == type::TypeId::INVALID ? expr->GetReturnValueType() : cached_desired_type;
   sherpa_->SetDesiredType(expr.CastManagedPointerTo<parser::AbstractExpression>(), desired_type);
   sherpa_->CheckDesiredType(expr.CastManagedPointerTo<parser::AbstractExpression>());
 }
@@ -728,6 +764,20 @@ void BindNodeVisitor::Visit(common::ManagedPointer<parser::ComparisonExpression>
       NOISEPAGE_ASSERT(parser::ExpressionType::VALUE_CONSTANT == child->GetChild(0)->GetExpressionType(),
                        "We can only pull up ConstantValueExpression.");
       expr->SetChild(i, child->GetChild(0));
+    }
+  }
+
+  for (auto i = 0UL; i < expr->GetChildrenSize(); ++i) {
+    auto child = expr->GetChild(i);
+    if (child->GetExpressionType() == parser::ExpressionType::COLUMN_VALUE) {
+      auto index = child.CastManagedPointerTo<parser::ColumnValueExpression>()->GetParamIdx();
+      if (index >= 0) {
+        // replace with PVE
+        std::unique_ptr<parser::AbstractExpression> pve = std::make_unique<parser::ParameterValueExpression>(index);
+        pve->SetReturnValueType(child->GetReturnValueType());
+        expr->SetChild(i, common::ManagedPointer(pve));
+        sherpa_->GetParseResult()->AddExpression(std::move(pve));
+      }
     }
   }
 }
@@ -793,6 +843,9 @@ void BindNodeVisitor::Visit(common::ManagedPointer<parser::OperatorExpression> e
 void BindNodeVisitor::Visit(common::ManagedPointer<parser::ParameterValueExpression> expr) {
   BINDER_LOG_TRACE("Visiting ParameterValueExpression ...");
   SqlNodeVisitor::Visit(expr);
+  if (sherpa_ == nullptr || sherpa_->GetParameters() == nullptr) {
+    return;
+  }
   const common::ManagedPointer<parser::ConstantValueExpression> param =
       common::ManagedPointer(&((*(sherpa_->GetParameters()))[expr->GetValueIdx()]));
   const auto desired_type = sherpa_->GetDesiredType(expr.CastManagedPointerTo<parser::AbstractExpression>());

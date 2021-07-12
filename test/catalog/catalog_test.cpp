@@ -138,9 +138,9 @@ TEST_F(CatalogTests, ProcTest) {
   std::vector<catalog::type_oid_t> arg_types = {accessor->GetTypeOidFromTypeId(type::TypeId::INTEGER),
                                                 accessor->GetTypeOidFromTypeId(type::TypeId::BOOLEAN),
                                                 accessor->GetTypeOidFromTypeId(type::TypeId::SMALLINT)};
-  std::vector<catalog::postgres::PgProc::ArgModes> arg_modes = {catalog::postgres::PgProc::ArgModes::IN,
-                                                                catalog::postgres::PgProc::ArgModes::IN,
-                                                                catalog::postgres::PgProc::ArgModes::IN};
+  std::vector<catalog::postgres::PgProc::ArgMode> arg_modes = {catalog::postgres::PgProc::ArgMode::IN,
+                                                               catalog::postgres::PgProc::ArgMode::IN,
+                                                               catalog::postgres::PgProc::ArgMode::IN};
   auto src = "int sample(arg1, arg2, arg3){return 2;}";
 
   auto proc_oid =
@@ -166,7 +166,7 @@ TEST_F(CatalogTests, ProcTest) {
   EXPECT_TRUE(sin_context->IsBuiltin());
   EXPECT_EQ(sin_context->GetBuiltin(), execution::ast::Builtin::Sin);
   EXPECT_EQ(sin_context->GetFunctionReturnType(), type::TypeId::REAL);
-  auto sin_args = sin_context->GetFunctionArgsType();
+  auto sin_args = sin_context->GetFunctionArgTypes();
   EXPECT_EQ(sin_args.size(), 1);
   EXPECT_EQ(sin_args.back(), type::TypeId::REAL);
   EXPECT_EQ(sin_context->GetFunctionName(), "sin");

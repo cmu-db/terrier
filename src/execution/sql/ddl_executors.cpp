@@ -5,10 +5,21 @@
 #include <vector>
 
 #include "catalog/catalog_accessor.h"
+#include "catalog/postgres/pg_language.h"
 #include "common/macros.h"
+#include "execution/ast/ast_pretty_print.h"
+#include "execution/ast/context.h"
+#include "execution/ast/udf/udf_ast_context.h"
+#include "execution/compiler/codegen.h"
+#include "execution/compiler/function_builder.h"
+#include "execution/compiler/udf/udf_codegen.h"
 #include "execution/exec/execution_context.h"
+#include "execution/sema/sema.h"
+#include "loggers/execution_logger.h"
 #include "parser/expression/column_value_expression.h"
+#include "parser/udf/udf_parser.h"
 #include "planner/plannodes/create_database_plan_node.h"
+#include "planner/plannodes/create_function_plan_node.h"
 #include "planner/plannodes/create_index_plan_node.h"
 #include "planner/plannodes/create_namespace_plan_node.h"
 #include "planner/plannodes/create_table_plan_node.h"
@@ -31,6 +42,103 @@ bool DDLExecutors::CreateNamespaceExecutor(const common::ManagedPointer<planner:
                                            const common::ManagedPointer<catalog::CatalogAccessor> accessor) {
   // Request permission from the Catalog to see if this a valid namespace name
   return accessor->CreateNamespace(node->GetNamespaceName()) != catalog::INVALID_NAMESPACE_OID;
+}
+
+bool DDLExecutors::CreateFunctionExecutor(const common::ManagedPointer<planner::CreateFunctionPlanNode> node,
+                                          const common::ManagedPointer<catalog::CatalogAccessor> accessor) {
+  // Request permission from the Catalog to see if this a valid namespace name
+  NOISEPAGE_ASSERT(node->GetUDFLanguage() == parser::PLType::PL_PGSQL, "Unsupported language");
+  NOISEPAGE_ASSERT(!node->GetFunctionBody().empty(), "Unsupported function body contents");
+
+  // I don't like how we have to separate the two here
+  std::vector<type::TypeId> param_type_ids{};
+  std::vector<catalog::type_oid_t> param_types{};
+  for (const auto t : node->GetFunctionParameterTypes()) {
+    param_type_ids.push_back(parser::FuncParameter::DataTypeToTypeId(t));
+    param_types.push_back(accessor->GetTypeOidFromTypeId(parser::FuncParameter::DataTypeToTypeId(t)));
+  }
+
+  auto body = node->GetFunctionBody().front();
+  auto proc_id = accessor->CreateProcedure(
+      node->GetFunctionName(), catalog::postgres::PgLanguage::PLPGSQL_LANGUAGE_OID, node->GetNamespaceOid(),
+      node->GetFunctionParameterNames(), param_types, param_types, {},
+      accessor->GetTypeOidFromTypeId(parser::ReturnType::DataTypeToTypeId(node->GetReturnType())), body, false);
+  if (proc_id == catalog::INVALID_PROC_OID) {
+    return false;
+  }
+
+  // Make the context here using the body
+  ast::udf::UDFASTContext udf_ast_context{};
+  parser::udf::PLpgSQLParser udf_parser{(common::ManagedPointer(&udf_ast_context)), accessor, node->GetDatabaseOid()};
+
+  std::unique_ptr<ast::udf::FunctionAST> ast{};
+  try {
+    ast = udf_parser.Parse(node->GetFunctionParameterNames(), std::move(param_type_ids), body,
+                           (common::ManagedPointer(&udf_ast_context)));
+  } catch (Exception &e) {
+    return false;
+  }
+
+  // TODO(Kyle): Is this leaked?
+  auto region = new util::Region(node->GetFunctionName());
+  sema::ErrorReporter error_reporter{region};
+
+  auto ast_context = std::make_unique<ast::Context>(region, &error_reporter);
+
+  compiler::CodeGen codegen{ast_context.get(), accessor.Get()};
+  util::RegionVector<ast::FieldDecl *> fn_params{codegen.GetAstContext()->GetRegion()};
+  fn_params.emplace_back(
+      codegen.MakeField(codegen.MakeFreshIdentifier("executionCtx"),
+                        codegen.PointerType(codegen.BuiltinType(ast::BuiltinType::ExecutionContext))));
+
+  for (auto i = 0UL; i < node->GetFunctionParameterNames().size(); i++) {
+    const auto &name = node->GetFunctionParameterNames()[i];
+    const auto &type = parser::ReturnType::DataTypeToTypeId(node->GetFunctionParameterTypes()[i]);
+    fn_params.emplace_back(
+        codegen.MakeField(ast_context->GetIdentifier(name), codegen.TplType(execution::sql::GetTypeId(type))));
+  }
+
+  auto name = node->GetFunctionName();
+  compiler::FunctionBuilder fb{
+      &codegen, codegen.MakeFreshIdentifier(name), std::move(fn_params),
+      codegen.TplType(execution::sql::GetTypeId(parser::ReturnType::DataTypeToTypeId(node->GetReturnType())))};
+
+  compiler::udf::UDFCodegen udf_codegen{accessor.Get(), &fb, &udf_ast_context, &codegen, node->GetDatabaseOid()};
+  udf_codegen.GenerateUDF(ast->Body());
+  auto *file = udf_codegen.Finish();
+
+  {
+    sema::Sema type_check{codegen.GetAstContext().Get()};
+    type_check.GetErrorReporter()->Reset();
+    if (type_check.Run(file)) {
+      EXECUTION_LOG_ERROR("Errors: \n {}", type_check.GetErrorReporter()->SerializeErrors());
+      return false;
+    }
+  }
+
+  // TODO(Kyle): We are recomputing the types here because we lost
+  // them to a std::move() above when we generate the AST, can we
+  // avoid duplicating this work? Would need to change the APIS.
+
+  std::vector<type::TypeId> types{};
+  types.reserve(node->GetFunctionParameterTypes().size());
+  std::transform(node->GetFunctionParameterTypes().cbegin(), node->GetFunctionParameterTypes().cend(),
+                 std::back_inserter(types), [](const parser::BaseFunctionParameter::DataType &type) -> type::TypeId {
+                   return parser::FuncParameter::DataTypeToTypeId(type);
+                 });
+
+  auto udf_context = std::make_unique<functions::FunctionContext>(
+      node->GetFunctionName(), parser::ReturnType::DataTypeToTypeId(node->GetReturnType()), std::move(types),
+      std::unique_ptr<util::Region>(region), std::move(ast_context), file);
+  if (!accessor->SetFunctionContextPointer(proc_id, udf_context.get())) {
+    return false;
+  }
+
+  // TODO(Kyle): Not quite sure how abort actions work, but is
+  // the implication here that we leak in the event that we do
+  // not abort and the associated transaction completes?
+  accessor->GetTxn()->RegisterAbortAction([udf_context = udf_context.release()]() { delete udf_context; });
+  return true;
 }
 
 bool DDLExecutors::CreateTableExecutor(const common::ManagedPointer<planner::CreateTablePlanNode> node,

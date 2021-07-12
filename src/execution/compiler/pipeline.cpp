@@ -15,6 +15,7 @@
 #include "loggers/execution_logger.h"
 #include "metrics/metrics_defs.h"
 #include "planner/plannodes/abstract_plan_node.h"
+#include "planner/plannodes/output_schema.h"
 #include "spdlog/fmt/fmt.h"
 
 namespace noisepage::execution::compiler {
@@ -26,7 +27,7 @@ Pipeline::Pipeline(CompilationContext *ctx)
       compilation_context_(ctx),
       codegen_(compilation_context_->GetCodeGen()),
       state_var_(codegen_->MakeIdentifier("pipelineState")),
-      state_(codegen_->MakeIdentifier(fmt::format("P{}_State", id_)),
+      state_(codegen_->MakeIdentifier(fmt::format("P{}{}_State", ctx->GetFunctionPrefix(), id_)),
              [this](CodeGen *codegen) { return codegen_->MakeExpr(state_var_); }),
       driver_(nullptr),
       parallelism_(Parallelism::Parallel),
@@ -154,24 +155,32 @@ util::RegionVector<ast::FieldDecl *> Pipeline::PipelineParams() const {
 
 void Pipeline::LinkSourcePipeline(Pipeline *dependency) {
   NOISEPAGE_ASSERT(dependency != nullptr, "Source cannot be null");
+  // Add pipeline `dependency` as a nested pipeline
   dependencies_.push_back(dependency);
+  // Remove ourselves from the nested pipeline of dependency, if present
+  // TODO(Kyle): Is this possible? If so, is this a broken invariant?
+  if (std::find(dependency->nested_pipelines_.begin(), dependency->nested_pipelines_.end(), this) !=
+      dependency->nested_pipelines_.end()) {
+    dependency->nested_pipelines_.erase(
+        std::remove(dependency->nested_pipelines_.begin(), dependency->nested_pipelines_.end(), this),
+        dependency->nested_pipelines_.end());
+  }
 }
 
-void Pipeline::LinkNestedPipeline(Pipeline *nested_pipeline, const OperatorTranslator *op) {
-  NOISEPAGE_ASSERT(nested_pipeline != nullptr, "Nested pipeline cannot be null");
+void Pipeline::LinkNestedPipeline(Pipeline *pipeline, const OperatorTranslator *op) {
+  NOISEPAGE_ASSERT(pipeline != nullptr, "Nested pipeline cannot be null");
   // if pipeline is in my dependencies let's not do this to avoid circularity
-  if (std::find(dependencies_.begin(), dependencies_.end(), nested_pipeline) == dependencies_.end()) {
-    nested_pipeline->nested_pipelines_.push_back(this);
+  if (std::find(dependencies_.begin(), dependencies_.end(), pipeline) == dependencies_.end()) {
+    pipeline->nested_pipelines_.push_back(this);
   }
-  if (!nested_pipeline->nested_) {
-    nested_pipeline->nested_ = true;
-    nested_pipeline->parent_ = this;
+  if (!pipeline->nested_) {
+    pipeline->nested_ = true;
     // add to pipeline params
-    size_t i = 0;
+    std::size_t i = 0;
     for (auto &col : op->GetPlan().GetOutputSchema()->GetColumns()) {
-      NOISEPAGE_ASSERT(nested_pipeline->extra_pipeline_params_.empty(),
+      NOISEPAGE_ASSERT(pipeline->extra_pipeline_params_.empty(),
                        "We do not support two pipelines nesting the same pipeline yet");
-      nested_pipeline->extra_pipeline_params_.push_back(
+      pipeline->extra_pipeline_params_.push_back(
           codegen_->MakeField(codegen_->MakeIdentifier("row" + std::to_string(i++)),
                               codegen_->PointerType(codegen_->TplType(sql::GetTypeId(col.GetType())))));
     }
@@ -208,8 +217,7 @@ void Pipeline::Prepare(const exec::ExecutionSettings &exec_settings) {
     ast::Expr *type = codegen_->BuiltinType(ast::BuiltinType::ExecOUFeatureVector);
     oufeatures_ = DeclarePipelineStateEntry("execFeatures", type);
   }
-
-  // if this pipeline is nested, it doesn't own its pipeline state
+  // If this pipeline is nested, it doesn't own its pipeline state
   state_.ConstructFinalType(codegen_);
 
   // Finalize the execution mode. We choose serial execution if ANY of the below
@@ -228,10 +236,12 @@ void Pipeline::Prepare(const exec::ExecutionSettings &exec_settings) {
 
   // Pretty print.
   {
-    std::string result;
+    std::string result{};
     bool first = true;
     for (auto iter = Begin(), end = End(); iter != end; ++iter) {
-      if (!first) result += " --> ";
+      if (!first) {
+        result += " --> ";
+      }
       first = false;
       std::string plan_type = planner::PlanNodeTypeToString((*iter)->GetPlan().GetPlanNodeType());
       std::transform(plan_type.begin(), plan_type.end(), plan_type.begin(), ::tolower);
@@ -277,15 +287,38 @@ ast::FunctionDecl *Pipeline::GenerateTearDownPipelineStateFunction() const {
   return builder.Finish();
 }
 
-ast::FunctionDecl *Pipeline::GenerateInitPipelineFunction() const {
+ast::FunctionDecl *Pipeline::GeneratePipelineWrapperFunction(ast::LambdaExpr *output_callback) const {
+  auto name = codegen_->MakeIdentifier(CreatePipelineFunctionName("RunAll"));
+  auto params = compilation_context_->QueryParams();
+  auto run_params = params;
+  if (output_callback != nullptr) {
+    run_params.push_back(codegen_->MakeField(
+        output_callback->GetName(), codegen_->LambdaType(output_callback->GetFunctionLiteralExpr()->TypeRepr())));
+  }
+  FunctionBuilder builder(codegen_, name, std::move(run_params), codegen_->Nil());
+  {
+    CodeGen::CodeScope code_scope(codegen_);
+    ast::Identifier p_state = codegen_->MakeFreshIdentifier("pipeline_state");
+    builder.Append(codegen_->DeclareVarNoInit(p_state, state_.GetType()->TypeRepr()));
+    auto query_state_param = builder.GetParameterByPosition(0);
+    auto p_state_ptr = codegen_->AddressOf(p_state);
+    auto lambda_call = builder.GetParameterByPosition(1);
+    builder.Append(codegen_->Call(GetInitPipelineFunctionName(), {query_state_param, p_state_ptr}));
+    builder.Append(codegen_->Call(GetRunPipelineFunctionName(), {query_state_param, p_state_ptr, lambda_call}));
+    builder.Append(codegen_->Call(GetTeardownPipelineFunctionName(), {query_state_param, p_state_ptr}));
+  }
+
+  return builder.Finish();
+}
+
+ast::FunctionDecl *Pipeline::GenerateInitPipelineFunction(ast::LambdaExpr *output_callback) const {
   auto query_state = compilation_context_->GetQueryState();
   auto name = codegen_->MakeIdentifier(CreatePipelineFunctionName("Init"));
   auto params = compilation_context_->QueryParams();
   ast::FieldDecl *p_state_ptr = nullptr;
   auto &state = GetPipelineStateDescriptor();
-  // Need to initialize this to stop compiler from complaining
-  uint32_t p_state_ind = -1;
-  if (nested_) {
+  uint32_t p_state_ind = 0;
+  if (nested_ || output_callback != nullptr) {
     p_state_ptr = codegen_->MakeField(codegen_->MakeFreshIdentifier("pipeline_state"),
                                       codegen_->PointerType(codegen_->MakeExpr(state.GetTypeName())));
     params.push_back(p_state_ptr);
@@ -298,11 +331,10 @@ ast::FunctionDecl *Pipeline::GenerateInitPipelineFunction() const {
     ast::Expr *exec_ctx = compilation_context_->GetExecutionContextPtrFromQueryState();
     ast::Identifier tls = codegen_->MakeFreshIdentifier("threadStateContainer");
     builder.Append(codegen_->DeclareVarWithInit(tls, codegen_->ExecCtxGetTLS(exec_ctx)));
+
     // @tlsReset(tls, @sizeOf(ThreadState), init, tearDown, queryState)
     ast::Expr *state_ptr = query_state->GetStatePointer(codegen_);
-    auto &state = GetPipelineStateDescriptor();
-    if (!nested_) {
-      // TLS reset if this is not a nested pipeline, i.e: we OWN the TLS
+    if (!nested_ && output_callback == nullptr) {
       builder.Append(codegen_->TLSReset(codegen_->MakeExpr(tls), state.GetTypeName(),
                                         GetSetupPipelineStateFunctionName(), GetTearDownPipelineStateFunctionName(),
                                         state_ptr));
@@ -315,7 +347,7 @@ ast::FunctionDecl *Pipeline::GenerateInitPipelineFunction() const {
   return builder.Finish();
 }
 
-ast::FunctionDecl *Pipeline::GeneratePipelineWorkFunction() const {
+ast::FunctionDecl *Pipeline::GeneratePipelineWorkFunction(ast::LambdaExpr *output_callback) const {
   auto params = PipelineParams();
   for (auto field : extra_pipeline_params_) {
     params.push_back(field);
@@ -324,6 +356,11 @@ ast::FunctionDecl *Pipeline::GeneratePipelineWorkFunction() const {
   if (IsParallel()) {
     auto additional_params = driver_->GetWorkerParams();
     params.insert(params.end(), additional_params.begin(), additional_params.end());
+  }
+
+  if (output_callback != nullptr) {
+    params.push_back(codegen_->MakeField(output_callback->GetName(),
+                                         codegen_->LambdaType(output_callback->GetFunctionLiteralExpr()->TypeRepr())));
   }
 
   FunctionBuilder builder(codegen_, GetWorkFunctionName(), std::move(params), codegen_->Nil());
@@ -353,7 +390,7 @@ ast::FunctionDecl *Pipeline::GeneratePipelineWorkFunction() const {
   return builder.Finish();
 }
 
-std::vector<ast::Expr *> Pipeline::GenerateSingleRunPipelineFunction() const {
+std::vector<ast::Expr *> Pipeline::CallSingleRunPipelineFunction() const {
   NOISEPAGE_ASSERT(!nested_, "can't call a nested pipeline like this");
   return {
       codegen_->Call(GetInitPipelineFunctionName(), {compilation_context_->GetQueryState()->GetStatePointer(codegen_)}),
@@ -383,6 +420,20 @@ void Pipeline::CallNestedRunPipelineFunction(WorkContext *ctx, const OperatorTra
                                   {compilation_context_->GetQueryState()->GetStatePointer(codegen_), p_state_ptr}));
 }
 
+std::vector<ast::Expr *> Pipeline::CallRunPipelineFunction() const {
+  std::vector<ast::Expr *> calls;
+  std::vector<const Pipeline *> pipelines;
+  CollectDependencies(&pipelines);
+  for (auto pipeline : pipelines) {
+    if (!pipeline->nested_ || (pipeline == this)) {
+      for (auto call : CallSingleRunPipelineFunction()) {
+        calls.push_back(call);
+      }
+    }
+  }
+  return calls;
+}
+
 ast::Identifier Pipeline::GetInitPipelineFunctionName() const {
   return codegen_->MakeIdentifier(CreatePipelineFunctionName("Init"));
 }
@@ -395,23 +446,25 @@ ast::Identifier Pipeline::GetRunPipelineFunctionName() const {
   return codegen_->MakeIdentifier(CreatePipelineFunctionName("Run"));
 }
 
-ast::Expr *Pipeline::GetNestedInputArg(uint32_t index) const {
-  NOISEPAGE_ASSERT(nested_, "Asking for input arg on non-nested pipeline");
-  NOISEPAGE_ASSERT(index < extra_pipeline_params_.size(),
-                   "Asking for input arg on non-nested pipeline that doesn't exist");
+ast::Expr *Pipeline::GetNestedInputArg(const std::size_t index) const {
+  NOISEPAGE_ASSERT(nested_, "Requested nested input argument on non-nested pipeline");
+  NOISEPAGE_ASSERT(index < extra_pipeline_params_.size(), "Requested nested index argument out of range");
   return codegen_->UnaryOp(parsing::Token::Type::STAR, codegen_->MakeExpr(extra_pipeline_params_[index]->Name()));
 }
 
-ast::FunctionDecl *Pipeline::GenerateRunPipelineFunction() const {
+ast::FunctionDecl *Pipeline::GenerateRunPipelineFunction(query_id_t query_id, ast::LambdaExpr *output_callback) const {
   bool started_tracker = false;
   auto name = codegen_->MakeIdentifier(CreatePipelineFunctionName("Run"));
   auto params = compilation_context_->QueryParams();
-  if (nested_) {
-    // if we're nested we also take in the pipeline state as an argument
+  if (nested_ || output_callback != nullptr) {
     params.push_back(codegen_->MakeField(state_var_, codegen_->PointerType(state_.GetTypeName())));
   }
   for (auto field : extra_pipeline_params_) {
     params.push_back(field);
+  }
+  if (output_callback != nullptr) {
+    params.push_back(codegen_->MakeField(output_callback->GetName(),
+                                         codegen_->LambdaType(output_callback->GetFunctionLiteralExpr()->TypeRepr())));
   }
   FunctionBuilder builder(codegen_, name, std::move(params), codegen_->Nil());
   {
@@ -440,18 +493,18 @@ ast::FunctionDecl *Pipeline::GenerateRunPipelineFunction() const {
       //      if(!nested_) {
       InjectStartResourceTracker(&builder, false);
       started_tracker = true;
-      //      }
 
-      std::vector<ast::Expr *> args = {builder.GetParameterByPosition(0), codegen_->MakeExpr(state_var_)};
+      std::vector<ast::Expr *> args{builder.GetParameterByPosition(0), codegen_->MakeExpr(state_var_)};
       if (nested_) {
-        // if this is a nested pipeline we also pop in all the extra arguments that the nested pipeline takes
-        // i starts at arg size because the first two args of run pipeline are query state and pipelien state
         size_t i = args.size();
         ast::Expr *arg = builder.GetParameterByPosition(i++);
         while (arg != nullptr) {
           args.push_back(arg);
           arg = builder.GetParameterByPosition(i++);
         }
+      }
+      if (output_callback != nullptr && !nested_) {
+        args.push_back(codegen_->MakeExpr(output_callback->GetName()));
       }
       builder.Append(codegen_->Call(GetWorkFunctionName(), args));
     }
@@ -471,15 +524,13 @@ ast::FunctionDecl *Pipeline::GenerateRunPipelineFunction() const {
   return builder.Finish();
 }
 
-ast::FunctionDecl *Pipeline::GenerateTearDownPipelineFunction() const {
+ast::FunctionDecl *Pipeline::GenerateTearDownPipelineFunction(ast::LambdaExpr *output_callback) const {
   auto name = codegen_->MakeIdentifier(CreatePipelineFunctionName("TearDown"));
   auto params = compilation_context_->QueryParams();
   ast::FieldDecl *p_state_ptr = nullptr;
   auto &state = GetPipelineStateDescriptor();
-  // Need to initialize this to stop compiler from complaining
-  uint32_t p_state_index = -1;
-  if (nested_) {
-    // if we're nested we also take in the pipeline state as an argument
+  uint32_t p_state_index = 0;
+  if (nested_ || output_callback != nullptr) {
     p_state_ptr = codegen_->MakeField(codegen_->MakeFreshIdentifier("pipeline_state"),
                                       codegen_->PointerType(codegen_->MakeExpr(state.GetTypeName())));
     params.push_back(p_state_ptr);
@@ -490,16 +541,14 @@ ast::FunctionDecl *Pipeline::GenerateTearDownPipelineFunction() const {
   {
     // Begin a new code scope for fresh variables.
     CodeGen::CodeScope code_scope(codegen_);
-    if (!nested_) {
-      // Tear down thread local state if parallel pipeline
-      // again this is only applicable if we OWN the TLS (not nested)
+    if (!nested_ && output_callback == nullptr) {
+      // Tear down thread local state if parallel pipeline.
       ast::Expr *exec_ctx = compilation_context_->GetExecutionContextPtrFromQueryState();
       builder.Append(codegen_->TLSClear(codegen_->ExecCtxGetTLS(exec_ctx)));
 
       auto call = codegen_->CallBuiltin(ast::Builtin::EnsureTrackersStopped, {exec_ctx});
       builder.Append(codegen_->MakeStmt(call));
     } else {
-      // nested pipelines don't own the TLS so we won't
       auto query_state = compilation_context_->GetQueryState();
       auto state_ptr = query_state->GetStatePointer(codegen_);
 
@@ -511,7 +560,8 @@ ast::FunctionDecl *Pipeline::GenerateTearDownPipelineFunction() const {
   return builder.Finish();
 }
 
-void Pipeline::GeneratePipeline(ExecutableQueryFragmentBuilder *builder) const {
+void Pipeline::GeneratePipeline(ExecutableQueryFragmentBuilder *builder, query_id_t query_id,
+                                ast::LambdaExpr *output_callback) const {
   // Declare the pipeline state.
   builder->DeclareStruct(state_.GetType());
   // Generate pipeline state initialization and tear-down functions.
@@ -519,24 +569,21 @@ void Pipeline::GeneratePipeline(ExecutableQueryFragmentBuilder *builder) const {
   builder->DeclareFunction(GenerateTearDownPipelineStateFunction());
 
   // Generate main pipeline logic.
-  builder->DeclareFunction(GeneratePipelineWorkFunction());
+  builder->DeclareFunction(GeneratePipelineWorkFunction(output_callback));
+  builder->DeclareFunction(GenerateRunPipelineFunction(query_id, output_callback));
+  builder->DeclareFunction(GenerateInitPipelineFunction(output_callback));
+  auto teardown = GenerateTearDownPipelineFunction(output_callback);
+  builder->DeclareFunction(teardown);
 
-  auto init_fn = GenerateInitPipelineFunction();
-  auto run_fn = GenerateRunPipelineFunction();
-  auto teardown = GenerateTearDownPipelineFunction();
-
-  // Register the main init, run, tear-down functions as steps, in that order only if this isn't nested
-  // if this is nested, we don't want to register these things as steps as a nested pipeline's functions
-  // will be called by other pipeline functions
-  if (!nested_) {
-    builder->RegisterStep(init_fn);
-    builder->RegisterStep(run_fn);
+  // Register the main init, run, tear-down functions as steps, in that order.
+  if (output_callback != nullptr) {
+    auto fn = GeneratePipelineWrapperFunction(output_callback);
+    builder->DeclareFunction(fn);
+    builder->RegisterStep(fn);
+  } else if (!nested_) {
+    builder->RegisterStep(GenerateInitPipelineFunction(output_callback));
+    builder->RegisterStep(GenerateRunPipelineFunction(query_id, output_callback));
     builder->RegisterStep(teardown);
-  } else {
-    // we have to manually declare these, in the other case, RegisterStep did the equivalent
-    builder->DeclareFunction(init_fn);
-    builder->DeclareFunction(run_fn);
-    builder->DeclareFunction(teardown);
   }
   builder->AddTeardownFn(teardown);
 }

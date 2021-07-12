@@ -184,8 +184,8 @@ proc_oid_t CatalogAccessor::CreateProcedure(const std::string &procname, languag
                                             namespace_oid_t procns, const std::vector<std::string> &args,
                                             const std::vector<type_oid_t> &arg_types,
                                             const std::vector<type_oid_t> &all_arg_types,
-                                            const std::vector<postgres::PgProc::ArgModes> &arg_modes,
-                                            type_oid_t rettype, const std::string &src, bool is_aggregate) {
+                                            const std::vector<postgres::PgProc::ArgMode> &arg_modes, type_oid_t rettype,
+                                            const std::string &src, bool is_aggregate) {
   return dbc_->CreateProcedure(txn_, procname, language_oid, procns, args, arg_types, all_arg_types, arg_modes, rettype,
                                src, is_aggregate);
 }
@@ -201,6 +201,11 @@ proc_oid_t CatalogAccessor::GetProcOid(const std::string &procname, const std::v
     }
   }
   return catalog::INVALID_PROC_OID;
+}
+
+common::ManagedPointer<execution::functions::FunctionContext> CatalogAccessor::GetProcCtxPtr(
+    const proc_oid_t proc_oid) {
+  return dbc_->GetProcCtxPtr(txn_, proc_oid);
 }
 
 bool CatalogAccessor::SetFunctionContextPointer(proc_oid_t proc_oid,

@@ -127,6 +127,12 @@ class ColumnValueExpression : public AbstractExpression {
   /** @return column oid */
   catalog::col_oid_t GetColumnOid() const { return column_oid_; }
 
+  /** @return parameter index */
+  std::int32_t GetParamIdx() const { return param_idx_; }
+
+  /** @brief set the parameter index */
+  void SetParamIdx(const std::size_t param_idx) { param_idx_ = static_cast<std::int32_t>(param_idx); }
+
   /**
    * Get Column Full Name [tbl].[col]
    */
@@ -187,19 +193,25 @@ class ColumnValueExpression : public AbstractExpression {
  private:
   friend class binder::BinderContext;
   friend class execution::sql::TableGenerator;
+
   /** @param database_oid Database OID to be assigned to this expression */
   void SetDatabaseOID(catalog::db_oid_t database_oid) { database_oid_ = database_oid; }
+
   /** @param table_oid Table OID to be assigned to this expression */
   void SetTableOID(catalog::table_oid_t table_oid) { table_oid_ = table_oid; }
+
   /** @param column_oid Column OID to be assigned to this expression */
   void SetColumnOID(catalog::col_oid_t column_oid) { column_oid_ = column_oid; }
+
   /** @param table_oid Table OID to be assigned to this expression */
   void SetTableName(const std::string &table_name) { table_name_ = std::string(table_name); }
+
   /** @param column_oid Column OID to be assigned to this expression */
   void SetColumnName(const std::string &col_name) { column_name_ = std::string(col_name); }
 
   /** Table name. */
   std::string table_name_;
+
   /** Column name. */
   std::string column_name_;
 
@@ -211,6 +223,9 @@ class ColumnValueExpression : public AbstractExpression {
 
   /** OID of the column */
   catalog::col_oid_t column_oid_ = catalog::INVALID_COLUMN_OID;
+
+  /** parameter index */
+  std::int32_t param_idx_{-1};
 };
 
 DEFINE_JSON_HEADER_DECLARATIONS(ColumnValueExpression);
